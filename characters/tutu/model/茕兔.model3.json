@@ -1,0 +1,124 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "茕兔.moc3",
+		"Textures": [
+			"茕兔.4096/texture_00.png",
+			"茕兔.4096/texture_01.png",
+			"茕兔.4096/texture_02.png",
+			"茕兔.4096/texture_03.png",
+			"茕兔.4096/texture_04.png",
+			"茕兔.4096/texture_05.png",
+			"茕兔.4096/texture_06.png",
+			"茕兔.4096/texture_07.png",
+			"茕兔.4096/texture_08.png",
+			"茕兔.4096/texture_09.png"
+		],
+		"Physics": "茕兔.physics3.json",
+		"DisplayInfo": "茕兔.cdi3.json",
+		"Expressions": [
+			{
+				"Name": "sy",
+				"File": "sy.exp3.json"
+			},
+			{
+				"Name": "0.0",
+				"File": "0.0.exp3.json"
+			},
+			{
+				"Name": "ZZZ",
+				"File": "ZZZ.exp3.json"
+			},
+			{
+				"Name": "哭",
+				"File": "哭.exp3.json"
+			},
+			{
+				"Name": "星星眼",
+				"File": "星星眼.exp3.json"
+			},
+			{
+				"Name": "爱心眼",
+				"File": "爱心眼.exp3.json"
+			},
+			{
+				"Name": "眼泪",
+				"File": "眼泪.exp3.json"
+			},
+			{
+				"Name": "脸红",
+				"File": "脸红.exp3.json"
+			},
+			{
+				"Name": "黑脸",
+				"File": "黑脸.exp3.json"
+			},
+			{
+				"Name": "舌头",
+				"File": "舌头.exp3.json"
+			},
+			{
+				"Name": "前倾",
+				"File": "前倾.exp3.json"
+			},
+			{
+				"Name": "飞头",
+				"File": "飞头.exp3.json"
+			},
+			{
+				"Name": "发型2",
+				"File": "发型2.exp3.json"
+			},
+			{
+				"Name": "兔兔",
+				"File": "兔兔.exp3.json"
+			},
+			{
+				"Name": "扇子",
+				"File": "扇子.exp3.json"
+			},
+			{
+				"Name": "扇子1",
+				"File": "扇子1.exp3.json"
+			},
+			{
+				"Name": "点唇",
+				"File": "点唇.exp3.json"
+			}
+		],
+		"Motions": {
+			"Idle": [
+				{
+					"File": "Scene1.motion3.json"
+				}
+			],
+			"idle": [
+				{
+					"File": "Scene1.motion3.json"
+				}
+			],
+			"Scene1": [
+				{
+					"File": "Scene1.motion3.json"
+				}
+			]
+		}
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthOpenY"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		}
+	]
+}

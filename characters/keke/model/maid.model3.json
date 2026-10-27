@@ -1,0 +1,150 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "maid.moc3",
+    "Textures": [
+      "maid.4096/texture_00.png",
+      "maid.4096/texture_01.png",
+      "maid.4096/texture_02.png",
+      "maid.4096/texture_03.png"
+    ],
+    "Physics": "maid.physics3.json",
+    "DisplayInfo": "maid.cdi3.json",
+    "Expressions": [
+      {
+        "Name": "1星星眼",
+        "File": "1星星眼.exp3.json"
+      },
+      {
+        "Name": "1流泪",
+        "File": "1流泪.exp3.json"
+      },
+      {
+        "Name": "1爱心",
+        "File": "1爱心.exp3.json"
+      },
+      {
+        "Name": "1生气",
+        "File": "1生气.exp3.json"
+      },
+      {
+        "Name": "1白袜",
+        "File": "1白袜.exp3.json"
+      },
+      {
+        "Name": "1红脸",
+        "File": "1红脸.exp3.json"
+      },
+      {
+        "Name": "1钱钱",
+        "File": "1钱钱.exp3.json"
+      },
+      {
+        "Name": "1黑脸",
+        "File": "1黑脸.exp3.json"
+      },
+      {
+        "Name": "2奶茶",
+        "File": "2奶茶.exp3.json"
+      },
+      {
+        "Name": "2插手",
+        "File": "2插手.exp3.json"
+      },
+      {
+        "Name": "2比耶",
+        "File": "2比耶.exp3.json"
+      },
+      {
+        "Name": "2点单",
+        "File": "2点单.exp3.json"
+      },
+      {
+        "Name": "2菜单",
+        "File": "2菜单.exp3.json"
+      },
+      {
+        "Name": "2餐盘右",
+        "File": "2餐盘右.exp3.json"
+      },
+      {
+        "Name": "2餐盘左",
+        "File": "2餐盘左.exp3.json"
+      },
+      {
+        "Name": "3棕发",
+        "File": "3棕发.exp3.json"
+      },
+      {
+        "Name": "3白发",
+        "File": "3白发.exp3.json"
+      },
+      {
+        "Name": "3粉发",
+        "File": "3粉发.exp3.json"
+      },
+      {
+        "Name": "3金发",
+        "File": "3金发.exp3.json"
+      },
+      {
+        "Name": "4后发长度1",
+        "File": "4后发长度1.exp3.json"
+      },
+      {
+        "Name": "4后发长度2",
+        "File": "4后发长度2.exp3.json"
+      },
+      {
+        "Name": "丝袜带子",
+        "File": "丝袜带子.exp3.json"
+      },
+      {
+        "Name": "双马尾",
+        "File": "双马尾.exp3.json"
+      },
+      {
+        "Name": "发带",
+        "File": "发带.exp3.json"
+      },
+      {
+        "Name": "变小",
+        "File": "变小.exp3.json"
+      },
+      {
+        "Name": "点击",
+        "File": "点击.exp3.json"
+      },
+      {
+        "Name": "紫色",
+        "File": "紫色.exp3.json"
+      },
+      {
+        "Name": "蓝色",
+        "File": "蓝色.exp3.json"
+      }
+    ],
+    "Motions": {
+      "待机动画": [
+        {
+          "File": "待机动画.motion3.json"
+        }
+      ]
+    }
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": [
+        "ParamEyeLOpen",
+        "ParamEyeROpen"
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": []
+    }
+  ]
+}

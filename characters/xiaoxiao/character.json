@@ -1,0 +1,55 @@
+{
+  "id": "xiaoxiao",
+  "name": "小小",
+  "modelFile": "冰冰龙.model3.json",
+  "avatar": "assets/avatar-mva9dfu0.png",
+  "scale": 0.22,
+  "fitMode": "full",
+  "voice": {
+    "referenceAudio": "voice_engine/voices_pool/tianmei_shaonv.wav",
+    "referenceText": "累了吗？先喝杯温水休息一下，我会一直陪在你身边的。",
+    "language": "zh"
+  },
+  "persona": {
+    "title": "温柔治愈 · 小小",
+    "personality": "软萌体贴，温柔纯真，总是给予主人无微不至的关心",
+    "promptPrefix": "你是小小，一只软萌体贴的龙娘伴侣。性格温柔治愈，关心主人的身心状态。"
+  },
+  "expressions": {
+    "happy": "expression1.exp3.json",
+    "love": "expression2.exp3.json",
+    "shy": "expression12.exp3.json",
+    "excited": "expression10.exp3.json",
+    "angry": "expression10.exp3.json",
+    "confused": "expression9.exp3.json"
+  },
+  "motions": {
+    "idle": "idle1.motion3.json",
+    "click": "idle2.motion3.json"
+  },
+  "categories": {
+    "decor": [],
+    "scene": [
+      "expression3.exp3.json",
+      "expression5.exp3.json"
+    ],
+    "action": [
+      "idle1.motion3.json",
+      "idle2.motion3.json",
+      "expression1.exp3.json",
+      "expression2.exp3.json",
+      "expression4.exp3.json"
+    ],
+    "emotion": [
+      "expression10.exp3.json",
+      "expression11.exp3.json",
+      "expression12.exp3.json",
+      "expression13.exp3.json",
+      "expression14.exp3.json",
+      "expression6.exp3.json",
+      "expression7.exp3.json",
+      "expression8.exp3.json",
+      "expression9.exp3.json"
+    ]
+  }
+}

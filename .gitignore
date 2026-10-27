@@ -6,3 +6,8 @@ node_modules/
 /test-output/
 backups/
 dist/
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak
+characters/custom_*/

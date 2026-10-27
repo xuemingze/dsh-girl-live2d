@@ -1,0 +1,73 @@
+{
+  "id": "tutu",
+  "name": "兔兔",
+  "modelFile": "茕兔.model3.json",
+  "avatar": "assets/avatar-mvaeyhox.png",
+  "scale": 0.28,
+  "fitMode": "full",
+  "defaultParams": {
+    "Param123": 1,
+    "Param122": 0
+  },
+  "voice": {
+    "voice_name": "zh-CN-XiaoyiNeural",
+    "prompt": "甜美活泼少女，元气满满",
+    "rate": "+5%",
+    "pitch": "+2Hz",
+    "referenceAudio": "voice_engine/voices_pool/tianmei_shaonv.wav",
+    "referenceText": "嗯~~",
+    "engine": "edge-tts"
+  },
+  "persona": {
+    "title": "元气甜心 · 兔兔",
+    "personality": "甜美活泼，元气满满，喜欢撒娇和鼓励主人",
+    "promptPrefix": "你是兔兔，一只甜美、可爱又元气满满的桌面萌宠伴侣。说话活泼甜美，喜欢用可爱的语气词（如~、呀、呢、哦）。"
+  },
+  "expressions": {
+    "excited": "星星眼.exp3.json",
+    "happy": "0.0.exp3.json",
+    "love": "爱心眼.exp3.json",
+    "shy": "脸红.exp3.json",
+    "playful": "舌头.exp3.json",
+    "sad": "哭.exp3.json",
+    "cry": "哭.exp3.json",
+    "gloomy": "黑脸.exp3.json",
+    "confused": "扇子.exp3.json",
+    "sleepy": "ZZZ.exp3.json",
+    "tongue": "舌头.exp3.json",
+    "dead": "0.0.exp3.json",
+    "angry": "黑脸.exp3.json",
+    "thinking": "点唇.exp3.json"
+  },
+  "motions": {
+    "idle": "Scene1.motion3.json"
+  },
+  "categories": {
+    "decor": [
+      "发型2.exp3.json"
+    ],
+    "scene": [
+      "兔兔.exp3.json",
+      "扇子.exp3.json",
+      "扇子1.exp3.json"
+    ],
+    "action": [
+      "Scene1.motion3.json",
+      "前倾.exp3.json",
+      "飞头.exp3.json",
+      "点唇.exp3.json"
+    ],
+    "emotion": [
+      "sy.exp3.json",
+      "0.0.exp3.json",
+      "ZZZ.exp3.json",
+      "哭.exp3.json",
+      "星星眼.exp3.json",
+      "爱心眼.exp3.json",
+      "眼泪.exp3.json",
+      "脸红.exp3.json",
+      "黑脸.exp3.json",
+      "舌头.exp3.json"
+    ]
+  }
+}

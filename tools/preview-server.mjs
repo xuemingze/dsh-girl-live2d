@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { requestTTS, ensureTTSServiceRunning } from '../voice_engine/tts_client.js'
+import { analyzeCharacterAssets, saveCharacterCategories } from './character-asset-analyzer.js'
 /**
  * preview-server.mjs —— 脱离 DSH 单独预览桌宠。
  *
@@ -34,6 +36,8 @@ const MIME = {
 }
 
 const clients = new Set()
+let latestAudioBuffer = null
+let latestAudioSeq = 0
 /** 预览用的「上一轮消耗」：turn-end 事件里带的 tokens 直接折算成金额，模拟宿主记账 */
 let previewLastTurn = { ok: true, seq: 0, turn: null, amount: null, tokens: null, ts: null }
 
@@ -61,7 +65,13 @@ function broadcast(payload) {
 }
 
 function send(res, code, type, body) {
-  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' })
+  res.writeHead(code, {
+    'Content-Type': type,
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
+    'Access-Control-Allow-Headers': 'Content-Type, x-dsh-pet-desk, Authorization',
+  })
   res.end(body)
 }
 
@@ -158,10 +168,371 @@ window.addEventListener('load', function(){
 </script>
 </body></html>`
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
+      'Access-Control-Allow-Headers': 'Content-Type, x-dsh-pet-desk, Authorization',
+      'Access-Control-Max-Age': '86400',
+    })
+    return res.end()
+  }
+
   const url = (req.url || '/').split('?')[0]
 
   if (url === '/' || url === '/index.html') return send(res, 200, MIME['.html'], PAGE)
+
+  if (url === '/dsh-pet/standalone') {
+    const html = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DS 桌面伴侣 · Live2D</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:transparent}
+  body{--dsh-pet-standalone:1}
+</style>
+</head><body>
+<script src="/dsh-pet/pet.js"></script>
+</body></html>`
+    return send(res, 200, MIME['.html'], html)
+  }
+
+  
+  if (url === '/dsh-pet/audio.wav') {
+    if (!latestAudioBuffer) {
+      return send(res, 404, 'text/plain', 'no audio')
+    }
+    res.writeHead(200, {
+      'Content-Type': 'audio/wav',
+      'Content-Length': String(latestAudioBuffer.length),
+      'Cache-Control': 'no-store',
+    })
+    return res.end(latestAudioBuffer)
+  }
+
+  if (url === '/dsh-pet/test-speech') {
+    const handleSpeech = async (j) => {
+      const charId = j.characterId || 'tutu'
+      const testGreetings = {
+        tutu: '主人好呀！我是兔兔，随时准备为你加油助威哦~',
+        yuyu: '主人，我是玉玉。工作辛苦了，随时听候你的吩咐。',
+        xiaoxiao: '主人累了吗？喝杯温水休息一下，小小会一直陪着你的。',
+        keke: '报告主人！女仆可可随时待命，今天也要元气满满哦！',
+        whale: '主人好，鲸鱼娘随时在此协助你处理各项任务。',
+      }
+      const textToSpeak = j.text || testGreetings[charId] || '主人，语音系统测试正常！'
+      try {
+        const ttsOpts = {
+          text: textToSpeak,
+          characterId: charId,
+          voice: j.voice,
+          rate: j.rate,
+          pitch: j.pitch,
+          prompt: j.prompt,
+        }
+        const wav = await requestTTS(ttsOpts, charId, 9880)
+        if (wav && wav.length > 0) {
+          latestAudioBuffer = wav
+          latestAudioSeq++
+          broadcast({
+            t: 'voice-speech',
+            seq: latestAudioSeq,
+            text: textToSpeak,
+            characterId: charId,
+            url: '/dsh-pet/audio.wav?seq=' + latestAudioSeq,
+          })
+          return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, text: textToSpeak, audioUrl: '/dsh-pet/audio.wav?seq=' + latestAudioSeq }))
+        }
+      } catch (err) {}
+      return send(res, 503, MIME['.json'], JSON.stringify({ ok: false, error: '9880 TTS 服务未响应' }))
+    }
+
+    if (req.method === 'GET') {
+      const u = new URL(req.url, 'http://localhost')
+      return handleSpeech({
+        characterId: u.searchParams.get('characterId'),
+        text: u.searchParams.get('text')
+      })
+    }
+
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', async () => {
+      let j = {}
+      try { j = JSON.parse(body || '{}') } catch (e) {}
+      return handleSpeech(j)
+    })
+    return
+  }
+
+  if (url === '/dsh-pet/voices') {
+    try {
+      const resp = await fetch('http://127.0.0.1:9880/voices_list')
+      const d = await resp.json()
+      return send(res, 200, MIME['.json'], JSON.stringify(d))
+    } catch (e) {
+      return send(res, 503, MIME['.json'], JSON.stringify({ ok: false, error: '9880 离线' }))
+    }
+  }
+
+  if (url === '/dsh-pet/generate-voice') {
+    const handleVoice = async (j) => {
+      try {
+        const resp = await fetch('http://127.0.0.1:9880/generate_voice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(j),
+        })
+        if (!resp.ok) throw new Error('HTTP ' + resp.status)
+        const resolvedVoice = resp.headers.get('X-Resolved-Voice') || 'zh-CN-XiaoxiaoNeural'
+        const resolvedRate = resp.headers.get('X-Resolved-Rate') || '+0%'
+        const resolvedPitch = resp.headers.get('X-Resolved-Pitch') || '+0Hz'
+        const ab = await resp.arrayBuffer()
+        latestAudioBuffer = Buffer.from(ab)
+        latestAudioSeq++
+        return send(res, 200, MIME['.json'], JSON.stringify({
+          ok: true,
+          voice: resolvedVoice,
+          rate: resolvedRate,
+          pitch: resolvedPitch,
+          audioUrl: '/dsh-pet/audio.wav?seq=' + latestAudioSeq,
+        }))
+      } catch (err) {
+        return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: err.message }))
+      }
+    }
+
+    if (req.method === 'GET') {
+      const u = new URL(req.url, 'http://localhost')
+      return handleVoice({
+        prompt: u.searchParams.get('prompt') || '',
+        text: u.searchParams.get('text') || '',
+        characterId: u.searchParams.get('characterId') || 'tutu',
+        voice: u.searchParams.get('voice') || '',
+        rate: u.searchParams.get('rate') || 0,
+        pitch: u.searchParams.get('pitch') || 0,
+      })
+    }
+
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', async () => {
+      let j = {}
+      try { j = JSON.parse(body || '{}') } catch (e) {}
+      return handleVoice(j)
+    })
+    return
+  }
+
+  if (url === '/dsh-pet/save-voice-config') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let j = {}
+      try { j = JSON.parse(body || '{}') } catch (e) {}
+      if (!j.characterId) return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: 'Missing characterId' }))
+      const cfgPath = path.join(ROOT, 'characters', j.characterId, 'character.json')
+      try {
+        let cfg = {}
+        if (fs.existsSync(cfgPath)) cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+        const voiceName = (typeof j.voice === 'object' && j.voice !== null)
+          ? (j.voice.voice_name || j.voice.voice)
+          : (j.voice || undefined)
+        cfg.voice = {
+          voice_name: voiceName || cfg.voice?.voice_name || 'zh-CN-XiaoxiaoNeural',
+          prompt: j.prompt ?? cfg.voice?.prompt ?? '',
+          rate: j.rate ?? cfg.voice?.rate ?? '+0%',
+          pitch: j.pitch ?? cfg.voice?.pitch ?? '+0Hz',
+          referenceAudio: j.referenceAudio ?? j.customVoicePath ?? cfg.voice?.referenceAudio,
+          referenceText: j.referenceText ?? cfg.voice?.referenceText,
+          engine: j.engine ?? cfg.voice?.engine ?? 'edge-tts',
+        }
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8')
+        broadcast({ t: 'voice-config-updated', characterId: j.characterId, voice: cfg.voice })
+        return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, characterId: j.characterId, voice: cfg.voice }))
+      } catch (err) {
+        return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: err.message }))
+      }
+    })
+    return
+  }
+
+  if (url === '/dsh-pet/characters') {
+    const list = []
+    const charsDir = path.join(ROOT, 'characters')
+    try {
+      const dirs = fs.readdirSync(charsDir)
+      for (const d of dirs) {
+        const cfgPath = path.join(charsDir, d, 'character.json')
+        if (fs.existsSync(cfgPath)) {
+          try {
+            const c = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+            list.push(c)
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    return send(res, 200, MIME['.json'], JSON.stringify({
+      ok: true,
+      characters: list,
+      active: 'tutu',
+    }))
+  }
+
+  
+  if (url === '/dsh-pet/import-character') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let j = {}
+      try { j = JSON.parse(body || '{}') } catch (e) {}
+      const src = j.sourcePath ? path.resolve(j.sourcePath.trim()) : null
+      if (!src || !fs.existsSync(src)) {
+        return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: '路径不存在: ' + src }))
+      }
+      let modelFile = null
+      try {
+        const files = fs.readdirSync(src, { withFileTypes: true })
+        for (const f of files) {
+          if (f.isFile() && f.name.toLowerCase().endsWith('.model3.json')) {
+            modelFile = f.name
+            break
+          }
+        }
+      } catch (e) {}
+      if (!modelFile) return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: '未找到 .model3.json 文件' }))
+      const name = j.name || path.basename(src) || '新角色'
+      const charId = 'custom_' + Date.now().toString(36)
+      const targetDir = path.join(ROOT, 'characters', charId)
+      fs.mkdirSync(targetDir, { recursive: true })
+      try {
+        fs.symlinkSync(src, path.join(targetDir, 'model'), 'junction')
+      } catch (e) {
+        fs.cpSync(src, path.join(targetDir, 'model'), { recursive: true })
+      }
+      const charConfig = {
+        id: charId,
+        name,
+        modelFile,
+        title: name,
+        scale: 0.25,
+      }
+      // 立即执行深度资产扫描并生成初始映射
+      const analysis = analyzeCharacterAssets(targetDir)
+      charConfig.expressions = analysis.currentMappings.expressions
+      charConfig.motions = analysis.currentMappings.motions
+      charConfig.categories = analysis.categories
+      fs.writeFileSync(path.join(targetDir, 'character.json'), JSON.stringify(charConfig, null, 2), 'utf8')
+      broadcast({ t: 'character-changed', characterId: charId })
+      send(res, 200, MIME['.json'], JSON.stringify({ ok: true, character: charConfig, analysis }))
+    })
+    return
+  }
+
+  if (url === '/dsh-pet/delete-character') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let b = {}
+      try { b = JSON.parse(body || '{}') } catch (e) {}
+      const charId = (b.characterId || '').trim()
+      if (!charId) {
+        return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: 'Missing characterId' }))
+      }
+      const builtins = ['whale', 'tutu', 'yuyu', 'xiaoxiao', 'keke']
+      if (builtins.includes(charId)) {
+        return send(res, 403, MIME['.json'], JSON.stringify({ ok: false, error: '内置黄金伴侣不可删除' }))
+      }
+      const charDir = path.join(ROOT, 'characters', charId)
+      if (!fs.existsSync(charDir)) {
+        return send(res, 404, MIME['.json'], JSON.stringify({ ok: false, error: '角色目录不存在' }))
+      }
+      try {
+        fs.rmSync(charDir, { recursive: true, force: true })
+        broadcast({ t: 'character-deleted', characterId: charId, fallbackCharacterId: 'tutu' })
+        return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, deleted: charId, fallbackCharacterId: 'tutu' }))
+      } catch (err) {
+        return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: err.message }))
+      }
+    })
+    return
+  }
+
+  if (url === '/dsh-pet/set-character') {
+    return send(res, 200, MIME['.json'], JSON.stringify({ ok: true }))
+  }
+
+  if (url.startsWith('/dsh-pet/character-assets')) {
+    let qChar = 'tutu'
+    try {
+      const u = new URL(req.url, 'http://localhost')
+      qChar = u.searchParams.get('id') || 'tutu'
+    } catch (e) {}
+    const charDir = path.join(ROOT, 'characters', qChar)
+    if (!fs.existsSync(charDir)) {
+      return send(res, 404, MIME['.json'], JSON.stringify({ ok: false, error: 'Character not found' }))
+    }
+    const analysis = analyzeCharacterAssets(charDir)
+    return send(
+      res,
+      200,
+      MIME['.json'],
+      JSON.stringify(Object.assign({ ok: true }, analysis)),
+    )
+  }
+
+  if (url === '/dsh-pet/save-character-categories') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let b = {}
+      try { b = JSON.parse(body || '{}') } catch (e) {}
+      if (!b.characterId) {
+        return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: 'Missing characterId' }))
+      }
+      const charDir = path.join(ROOT, 'characters', b.characterId)
+      if (!fs.existsSync(charDir)) {
+        return send(res, 404, MIME['.json'], JSON.stringify({ ok: false, error: 'Character not found' }))
+      }
+      try {
+        const saved = saveCharacterCategories(charDir, b.categories || {})
+        return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, characterId: b.characterId, categories: saved }))
+      } catch (err) {
+        return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: err.message }))
+      }
+    })
+    return
+  }
+
+  if (url === '/dsh-pet/save-character-mapping') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (e) {}
+      if (!b || !b.characterId) {
+        return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: 'Missing characterId' }))
+      }
+      const charDir = path.join(ROOT, 'characters', b.characterId)
+      const cfgPath = path.join(charDir, 'character.json')
+      if (!fs.existsSync(cfgPath)) {
+        return send(res, 404, MIME['.json'], JSON.stringify({ ok: false, error: 'Character not found' }))
+      }
+      try {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+        if (b.expressions) cfg.expressions = b.expressions
+        if (b.motions) cfg.motions = b.motions
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8')
+        return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, characterId: b.characterId }))
+      } catch (err) {
+        return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: err.message }))
+      }
+    })
+    return
+  }
 
   if (url === '/dsh-pet/pet.js') {
     const body = fs.readFileSync(path.join(ASSETS, 'pet.js'), 'utf8')
@@ -173,6 +544,15 @@ const server = http.createServer((req, res) => {
     )
   }
 
+  if (url.startsWith('/dsh-pet/characters/')) {
+    let rel
+    try {
+      rel = decodeURIComponent(url.slice('/dsh-pet/characters/'.length))
+    } catch (e) {
+      rel = url.slice('/dsh-pet/characters/'.length)
+    }
+    return serveFile(res, path.join(ROOT, 'characters', rel))
+  }
   if (url.startsWith('/dsh-pet/vendor/')) {
     return serveFile(res, path.join(ASSETS, 'vendor', url.slice('/dsh-pet/vendor/'.length)))
   }
@@ -283,10 +663,23 @@ const server = http.createServer((req, res) => {
               700 + i * 45,
             )
           }
-          setTimeout(
-            () => broadcast({ t: 'turn-end', turn: 99, reason: { kind: 'completed' }, ms: 3200, sessionId: 'preview' }),
-            700 + reply.length * 45 + 200,
-          )
+          setTimeout(() => {
+            broadcast({ t: 'assistant', text: reply, sessionId: 'preview' })
+            broadcast({ t: 'turn-end', turn: 99, reason: { kind: 'completed' }, ms: 3200, sessionId: 'preview' })
+            requestTTS(reply, 'tutu', 9880).then((wav) => {
+              if (wav && wav.length > 0) {
+                latestAudioBuffer = wav
+                latestAudioSeq++
+                broadcast({
+                  t: 'voice-speech',
+                  seq: latestAudioSeq,
+                  text: reply,
+                  characterId: 'tutu',
+                  url: '/dsh-pet/audio.wav?seq=' + latestAudioSeq,
+                })
+              }
+            }).catch(() => {})
+          }, 700 + reply.length * 45 + 200)
         }, 900)
       }
       send(res, 200, MIME['.json'], JSON.stringify({ ok: true }))
@@ -394,8 +787,10 @@ function runDemo(mode) {
 }
 
 server.listen(PORT, '127.0.0.1', () => {
+  ensureTTSServiceRunning(9880).catch(() => {})
   console.log(`\n  鲸鱼娘预览： http://127.0.0.1:${PORT}\n`)
   console.log('  · 点鲸鱼娘 = 戳一下；双击 = 输入框；右键/⋯ = 菜单；拖动 = 挪位置')
   console.log('  · 左上角按钮可以假装 agent 在干活\n')
   if (AUTO_DEMO) setTimeout(() => runDemo('ok'), 1500)
 })
+

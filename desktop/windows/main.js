@@ -194,7 +194,7 @@ function createMain() {
     hasShadow: false,
     skipTaskbar: true,
     show: false,
-    title: 'DS 鲸鱼娘桌宠',
+    title: 'DS 桌面伴侣 · Live2D',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

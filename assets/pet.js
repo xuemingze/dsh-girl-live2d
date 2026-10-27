@@ -39,6 +39,8 @@
       corner: 'br',
       lookAtCursor: true,
       talkMouth: true,
+      sound: true,
+      ttsVolume: 1.0,
       sleepAfterMs: 180000,
       bubbleTtlMs: 0,
       maxWidthRatio: 0.5,
@@ -48,6 +50,40 @@
 
   const BASE = '/dsh-pet'
   const LS_KEY = 'dsh-live2d-pet:layout'
+  const DESK_TOKEN = (BOOT && BOOT.token) || ''
+
+  async function apiFetch(url, opt = {}) {
+    const headers = Object.assign({}, opt.headers || {})
+    if (opt.body && !headers['Content-Type'] && typeof opt.body === 'string') {
+      headers['Content-Type'] = 'application/json'
+    }
+    if (DESK_TOKEN) headers['x-dsh-pet-desk'] = DESK_TOKEN
+    const res = await fetch(url, Object.assign({}, opt, {
+      headers,
+      credentials: 'include',
+    }))
+    const raw = await res.text()
+    let data = null
+    try {
+      data = JSON.parse(raw)
+    } catch (e) {}
+    if (!res.ok) {
+      const errMsg = (data && data.error) || ('HTTP ' + res.status + (raw && raw.length < 80 ? ': ' + raw : ''))
+      throw new Error(errMsg)
+    }
+    const result = data !== null ? data : {}
+    if (result && typeof result === 'object' && typeof result.json !== 'function') {
+      try {
+        Object.defineProperty(result, 'json', {
+          value: async function () { return this },
+          enumerable: false,
+          configurable: true,
+          writable: true,
+        })
+      } catch (e) {}
+    }
+    return result
+  }
 
   /**
    * 设置持久化：把 CFG 里可序列化的值随 layout 一起存本地。
@@ -75,6 +111,508 @@
     } catch (err) {}
   }
   const MOTION_PRIORITY = { NONE: 0, IDLE: 1, NORMAL: 2, FORCE: 3 }
+
+  const CHARACTERS = {
+    tutu: {
+      id: 'tutu',
+      name: '兔兔',
+      title: '元气甜心',
+      modelUrl: BASE + '/characters/tutu/model/茕兔.model3.json',
+      scale: 0.28,
+      defaultParams: {
+        Param123: 1.0,
+      },
+    },
+    yuyu: {
+      id: 'yuyu',
+      name: '玉玉',
+      title: '冷艳御姐',
+      modelUrl: BASE + '/characters/yuyu/model/Xiyu.model3.json',
+      scale: 0.25,
+    },
+    xiaoxiao: {
+      id: 'xiaoxiao',
+      name: '小小',
+      title: '温柔治愈',
+      modelUrl: BASE + '/characters/xiaoxiao/model/冰冰龙.model3.json',
+      scale: 0.22,
+    },
+    keke: {
+      id: 'keke',
+      name: '可可',
+      title: '元气女仆',
+      modelUrl: BASE + '/characters/keke/model/maid.model3.json',
+      scale: 0.22,
+    },
+    whale: {
+      id: 'whale',
+      name: '鲸鱼娘',
+      title: '深海女仆',
+      modelUrl: BASE + '/characters/whale/model/c_0120.model3.json',
+      scale: 0.25,
+    },
+  }
+
+  let activeCharacterId = (BOOT.config && BOOT.config.characterId) || CFG.characterId || 'tutu'
+
+  function activeCharInfo() {
+    return CHARACTERS[activeCharacterId] || CHARACTERS.tutu
+  }
+
+  let audioCtx = null
+  let audioAnalyser = null
+  let audioDataArray = null
+  let isSpeakingAudio = false
+  let audioCurrentVolume = 0
+  let currentAudioSource = null
+  let currentAudioGain = null
+  let currentAudioElement = null
+
+  function stopCurrentAudio() {
+    if (currentAudioSource) {
+      try {
+        currentAudioSource.onended = null
+        currentAudioSource.stop()
+      } catch (e) {}
+      try {
+        currentAudioSource.disconnect()
+      } catch (e) {}
+      currentAudioSource = null
+    }
+    if (currentAudioElement) {
+      try {
+        currentAudioElement.onended = null
+        currentAudioElement.onerror = null
+        currentAudioElement.pause()
+        currentAudioElement.currentTime = 0
+      } catch (e) {}
+      currentAudioElement = null
+    }
+    isSpeakingAudio = false
+    audioCurrentVolume = 0
+  }
+
+  async function playAudioWithLipSync(url) {
+    if (!CFG.sound) return
+    stopCurrentAudio()
+    try {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+        audioAnalyser = audioCtx.createAnalyser()
+        audioAnalyser.fftSize = 256
+        audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount)
+      }
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume().catch(() => {})
+      }
+
+      const vol = Math.max(0, Math.min(1, Number(CFG.ttsVolume ?? 1.0)))
+
+      // 优先走 Web Audio decodeAudioData，无 CORS 限制、无节点生命周期冲突、振幅分析实时精准
+      try {
+        const response = await fetch(url)
+        if (!response.ok) throw new Error('HTTP ' + response.status)
+        const arrayBuffer = await response.arrayBuffer()
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
+        
+        const source = audioCtx.createBufferSource()
+        source.buffer = audioBuffer
+        
+        const gainNode = audioCtx.createGain()
+        gainNode.gain.setValueAtTime(vol, audioCtx.currentTime)
+
+        source.connect(audioAnalyser)
+        audioAnalyser.connect(gainNode)
+        gainNode.connect(audioCtx.destination)
+
+        currentAudioSource = source
+        currentAudioGain = gainNode
+        isSpeakingAudio = true
+        setStatus('speaking')
+
+        source.onended = () => {
+          if (currentAudioSource === source) {
+            currentAudioSource = null
+            isSpeakingAudio = false
+            audioCurrentVolume = 0
+            setStatus('idle')
+          }
+        }
+        source.start(0)
+        return
+      } catch (decodeErr) {
+        console.warn('[桌宠语音] decodeAudioData 失败，降级原生 Audio 播放:', decodeErr)
+      }
+
+      // 降级使用原生 HTML5 Audio
+      const audio = new Audio(url)
+      audio.volume = vol
+      currentAudioElement = audio
+      isSpeakingAudio = true
+      setStatus('speaking')
+      audio.onended = () => {
+        if (currentAudioElement === audio) {
+          currentAudioElement = null
+          isSpeakingAudio = false
+          audioCurrentVolume = 0
+          setStatus('idle')
+        }
+      }
+      audio.onerror = () => {
+        if (currentAudioElement === audio) {
+          currentAudioElement = null
+          isSpeakingAudio = false
+          audioCurrentVolume = 0
+          setStatus('idle')
+        }
+      }
+      audio.play().catch(() => {
+        if (currentAudioElement === audio) {
+          currentAudioElement = null
+          isSpeakingAudio = false
+        }
+      })
+    } catch (e) {
+      isSpeakingAudio = false
+    }
+  }
+
+  async function discoverAssetsFromModel(charId) {
+    const char = CHARACTERS[charId] || {}
+    let cfg = {}
+    try {
+      cfg = await apiFetch(BASE + '/characters/' + charId + '/character.json')
+    } catch (e) {}
+
+    let localSaved = null
+    try {
+      localSaved = JSON.parse(localStorage.getItem('dsh_pet_mapping_' + charId) || 'null')
+    } catch (e) {}
+
+    const curExp = (localSaved && localSaved.expressions) || cfg.expressions || char.expressions || {}
+    const curMot = (localSaved && localSaved.motions) || cfg.motions || char.motions || {}
+
+    const expressions = []
+    const motions = []
+
+    try {
+      const mUrl = char.modelUrl || (BASE + '/characters/' + charId + '/model/' + encodeURIComponent(char.modelFile || ''))
+      const mData = await apiFetch(mUrl)
+      const fRefs = (mData && mData.FileReferences) || {}
+
+      const expList = fRefs.Expressions || []
+      const expTasks = expList.map(async (e) => {
+        let params = []
+        try {
+          const expPath = String(e.File || '').split('/').map(encodeURIComponent).join('/')
+          const expJson = await apiFetch(BASE + '/characters/' + charId + '/model/' + expPath)
+          if (expJson && expJson.Parameters) {
+            params = expJson.Parameters.map((p) => ({ id: p.Id, value: p.Value, blend: p.Blend || 'Add' }))
+          }
+        } catch (e2) {}
+        return {
+          file: e.File,
+          name: e.Name || e.File.replace(/\.exp3\.json$/, ''),
+          params,
+        }
+      })
+      const resolvedExps = await Promise.all(expTasks)
+      for (const rx of resolvedExps) expressions.push(rx)
+
+      const motDict = fRefs.Motions || {}
+      for (const [group, mArr] of Object.entries(motDict)) {
+        if (Array.isArray(mArr) && mArr.length && mArr[0].File) {
+          motions.push({
+            file: mArr[0].File,
+            name: group,
+            duration: 2.0,
+          })
+        }
+      }
+    } catch (err) {
+      console.warn('[桌宠] 从 model3.json 自动嗅探资产异常：', err)
+    }
+
+    return {
+      ok: true,
+      characterId: charId,
+      expressions,
+      motions,
+      currentMappings: {
+        expressions: curExp,
+        motions: curMot,
+      },
+    }
+  }
+
+  async function loadCharacterAssets(charId) {
+    const char = CHARACTERS[charId]
+    if (!char) return
+    try {
+      let data = null
+      try {
+        data = await apiFetch(BASE + '/character-assets?id=' + encodeURIComponent(charId))
+      } catch (e) {}
+
+      // 如果后端没有返回有效表情列表，立即触发客户端深度兜底（从 model3.json 提取全部表情与动作）
+      if (!data || !data.ok || !data.expressions || data.expressions.length === 0) {
+        data = await discoverAssetsFromModel(charId)
+      }
+
+      currentCharacterAssets = {
+        characterId: charId,
+        expressions: (data && data.expressions) || [],
+        motions: (data && data.motions) || [],
+        categories: (data && data.categories) || { decor: [], scene: [], action: [], emotion: [] },
+      }
+      char.expressions = (data && data.currentMappings && data.currentMappings.expressions) || char.expressions || {}
+      char.motions = (data && data.currentMappings && data.currentMappings.motions) || char.motions || {}
+
+      // 装入该角色的所有可用表情参数
+      for (const k of Object.keys(EXPR)) delete EXPR[k]
+      for (const exp of currentCharacterAssets.expressions) {
+        if (exp.params) {
+          EXPR[exp.file] = exp.params
+          EXPR[exp.name] = exp.params
+        }
+      }
+
+      // 按映射表绑定标准情绪槽位
+      for (const k of Object.keys(MOOD_FACE)) delete MOOD_FACE[k]
+      MOOD_FACE.neutral = null
+
+      for (const [slot, expFile] of Object.entries(char.expressions)) {
+        if (expFile && EXPR[expFile]) {
+          MOOD_FACE[slot] = expFile
+          const def = STANDARD_EMOTION_SLOTS.find((s) => s.id === slot)
+          if (def && def.keys) {
+            for (const subKey of def.keys) {
+              MOOD_FACE[subKey] = expFile
+            }
+          }
+        }
+      }
+      if (MOOD_FACE.happy) MOOD_FACE.joy = MOOD_FACE.happy
+      if (MOOD_FACE.grumpy) MOOD_FACE.angry = MOOD_FACE.grumpy
+      if (MOOD_FACE.shy) MOOD_FACE.blush = MOOD_FACE.shy
+      if (MOOD_FACE.playful) {
+        MOOD_FACE.pout = MOOD_FACE.playful
+        MOOD_FACE.smug = MOOD_FACE.playful
+      }
+      if (MOOD_FACE.excited) {
+        MOOD_FACE.listening = MOOD_FACE.excited
+        MOOD_FACE.reading = MOOD_FACE.excited
+      }
+    } catch (err) {
+      console.warn('[桌宠] 加载角色表情资产异常：', err)
+    }
+  }
+
+  function resumeCharacterIdleMotion() {
+    if (!model || !model.internalModel || activeCharacterId === 'whale') return
+    try {
+      const mm = model.internalModel.motionManager
+      if (mm) {
+        const groups = (mm.definitions && Object.keys(mm.definitions)) || []
+        const idleGroup = groups.find((g) => g.toLowerCase() === 'idle') ||
+                          groups.find((g) => g.toLowerCase() === 'scene1') ||
+                          groups[0]
+        if (idleGroup) {
+          model.motion(idleGroup, 0, MOTION_PRIORITY.IDLE)
+        }
+      }
+    } catch (e) {}
+  }
+
+  function previewExpression(expFileOrName) {
+    if (!model || !coreModel) return
+    clearUserFace()
+    let expName = expFileOrName
+    if (!EXPR[expName] && EXPR[expFileOrName + '.exp3.json']) {
+      expName = expFileOrName + '.exp3.json'
+    }
+    act({ face: expName, ms: 3500 })
+    setTimeout(() => {
+      resumeCharacterIdleMotion()
+    }, 3600)
+  }
+
+  function previewMotion(motFileOrName) {
+    if (!model) return
+    const motName = String(motFileOrName || '').replace(/\.motion3\.json$/, '')
+    try {
+      if (model.internalModel && model.internalModel.motionManager) {
+        const mm = model.internalModel.motionManager
+        const groups = (mm.definitions && Object.keys(mm.definitions)) || []
+        const matched = groups.find((g) => g === motName || g.toLowerCase() === motName.toLowerCase() || g === motFileOrName)
+        if (matched) {
+          model.motion(matched, 0, MOTION_PRIORITY.FORCE)
+          return
+        }
+      }
+      model.motion(motName, 0, MOTION_PRIORITY.FORCE)
+    } catch (e) {
+      try {
+        model.motion('idle', 0, MOTION_PRIORITY.FORCE)
+      } catch (e2) {}
+    }
+  }
+
+  function cleanVoiceText(raw) {
+    if (!raw) return ''
+    let t = String(raw)
+    // 移除 markdown 代码块 ```...```
+    t = t.replace(/```[\s\S]*?```/g, ' [代码已折叠] ')
+    // 移除行内代码 `...`
+    t = t.replace(/`([^`]+)`/g, '$1')
+    // 移除 markdown 图片和链接 [text](url)
+    t = t.replace(/!\[.*?\]\(.*?\)/g, '')
+    t = t.replace(/\[(.*?)\]\(.*?\)/g, '$1')
+    // 移除 html 标签
+    t = t.replace(/<[^>]+>/g, '')
+    // 移除 markdown 标题符号、加粗、星号、引用等
+    t = t.replace(/[#*~_>]/g, '')
+    // 移除多余空白
+    t = t.replace(/\s+/g, ' ').trim()
+    // 提取前 1~2 句话（不超过 90 字），确保伴侣口播精炼生动
+    const sentences = t.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) || [t]
+    let summary = ''
+    for (const s of sentences) {
+      if ((summary + s).length > 90) break
+      summary += s
+      if (summary.length >= 28) break
+    }
+    return summary || t.slice(0, 80)
+  }
+
+  function classifyCharacterAssets(assets) {
+    const decor = []
+    const scene = []
+    const action = []
+    const emotion = []
+
+    const decorKeywords = [
+      '发型', '发', '白发', '粉发', '金发', '棕发', '双马尾', '后发', '发带', '头纱', '黑纱',
+      '袜', '白袜', '丝袜', '丝袜带子', '瞳孔', '瞳', '衣', '服', '裙', '外套', '眼镜', '饰品',
+      '尾巴', '耳', '变小', '蓝', '紫', '兔兔'
+    ]
+    const sceneKeywords = [
+      '扇子', '狐狸', '话筒', '麦克风', '菜单', '餐盘', '奶茶', '杯', '桌', '椅', '书', '电脑',
+      '设备', '宠物', '鱼', '伞', '道具'
+    ]
+    const actionKeywords = [
+      '点唇', '飞头', '前倾', '施法', '比耶', '插手', '点单', '点击', '勾手', '掏耳', '拉弓',
+      '射箭', '俯身', '脚', '脚捕捉', '脚点击', '嘘', '挥手', '动作', '摸', '抱'
+    ]
+
+    for (const e of ((assets && assets.expressions) || [])) {
+      const lower = (e.name + ' ' + e.file).toLowerCase()
+      if (sceneKeywords.some((kw) => lower.includes(kw.toLowerCase()))) {
+        scene.push(e)
+      } else if (decorKeywords.some((kw) => lower.includes(kw.toLowerCase()))) {
+        decor.push(e)
+      } else if (actionKeywords.some((kw) => lower.includes(kw.toLowerCase()))) {
+        action.push(e)
+      } else {
+        emotion.push(e)
+      }
+    }
+
+    for (const m of ((assets && assets.motions) || [])) {
+      action.push(m)
+    }
+
+    return { decor, scene, action, emotion }
+  }
+
+  async function loadCharacterModel(charId) {
+    const char = CHARACTERS[charId] || CHARACTERS.tutu
+    activeCharacterId = char.id
+    if (model) {
+      try {
+        if (model.internalModel) {
+          model.internalModel.off('beforeModelUpdate', applyRig)
+        }
+        app.stage.removeChild(model)
+        model.destroy()
+      } catch (e) {}
+      model = null
+      coreModel = null
+    }
+
+    const { Live2DModel } = PIXI.live2d
+    Live2DModel.registerTicker(PIXI.Ticker)
+
+    model = await Live2DModel.from(char.modelUrl, {
+      autoInteract: false,
+      autoUpdate: true,
+      idleMotionGroup: 'idle',
+    })
+    model.eventMode = 'none'
+    app.stage.addChild(model)
+
+    const internal = model.internalModel
+    coreModel = internal.coreModel
+
+    // 立即执行常驻参数初始化（例如兔兔的去水印/模型显示 Param123）
+    try {
+      if (char.defaultParams) {
+        for (const [k, v] of Object.entries(char.defaultParams)) {
+          coreModel.setParameterValueById(k, v)
+        }
+      }
+      if (char.id === 'tutu') {
+        coreModel.setParameterValueById('Param123', 1.0)
+      }
+      coreModel.saveParameters()
+    } catch (e) {}
+
+    // 角色表情资产与情绪映射同步
+    if (char.id === 'whale') {
+      for (const k of Object.keys(EXPR)) delete EXPR[k]
+      Object.assign(EXPR, BASE_WHALE_EXPR)
+      for (const k of Object.keys(MOOD_FACE)) delete MOOD_FACE[k]
+      Object.assign(MOOD_FACE, BASE_WHALE_MOOD_FACE)
+    } else {
+      await loadCharacterAssets(char.id)
+    }
+
+    internal.on('beforeModelUpdate', applyRig)
+    try {
+      if (internal.eyeBlink) internal.eyeBlink = undefined
+    } catch (e) {}
+    if (char.id !== 'whale') {
+      resumeCharacterIdleMotion()
+    }
+    mask.dirty = true
+  }
+
+  async function switchCharacter(charId) {
+    const target = CHARACTERS[charId]
+    if (!target) return
+    CFG.characterId = charId
+    persistCfg()
+    try {
+      await apiFetch(BASE + '/set-character', {
+        method: 'POST',
+        body: JSON.stringify({ characterId: charId }),
+      })
+    } catch (e) {}
+    ui.bubble.show('正在唤醒 ' + target.name + ' ...', { busy: true, sticky: true })
+    try {
+      contentBox = null
+      await loadCharacterModel(charId)
+      const box = await fitFromMeasurement()
+      applyPosition(readLayout())
+      restoreProps()
+      setBase('neutral', IDLE_PROPS)
+      updateMenuTabLabels()
+      ui.bubble.show('主人好！我是 ' + target.name + '（' + target.title + '），很高兴陪伴你~', { sticky: false, duration: 4000 })
+    } catch (err) {
+      ui.bubble.show('切换模型失败: ' + ((err && err.message) || err), { sticky: false, duration: 3000 })
+    }
+  }
+
   /**
    * 取景模式。这个模型是一整张「书桌场景」而不是半身立绘，直接整体显示会又小又占地方。
    * 关键是：三档都按「角色实体的高度」算，不是按画布高度算——画布上可能有一大片空气。
@@ -128,6 +666,34 @@
     angry: '生气',
     playful: '调皮',
   }
+
+  /**
+   * 以鲸鱼娘表情菜单为准的标准基准情绪槽位（15 项）
+   * 作为所有 Live2D 模型的统一通用情绪对接词汇表，使得各角色触发与鲸鱼娘 100% 同步
+   */
+  const STANDARD_EMOTION_SLOTS = [
+    { id: 'excited', label: '星星眼', icon: '✨', desc: '期待兴奋、阅读资料、倾听主人', keys: ['excited', 'listening', 'reading'], keywords: ['星星', '黄色瞳孔', '期待', 'star', 'excited', '1星星'] },
+    { id: 'happy', label: '开心兴奋', icon: '😊', desc: '积极喜悦、任务完成庆祝', keys: ['happy', 'joy'], keywords: ['0.0', '开心', '笑', 'happy', 'smile', 'joy', 'weixiao', 'xiyan', '1不许看'] },
+    { id: 'love', label: '爱心眼', icon: '❤️', desc: '好感心动、冒爱心、夸奖', keys: ['love'], keywords: ['爱心', '心心', '喜欢', 'love', 'heart', 'aixin', '1心心', '1爱心'] },
+    { id: 'shy', label: '脸红', icon: '😳', desc: '被摸头、被夸奖、害羞腼腆', keys: ['shy', 'blush'], keywords: ['脸红', '红脸', '害羞', 'shy', 'blush', 'hong', '1脸红', '1红脸', '1不许看2'] },
+    { id: 'playful', label: '调皮', icon: '😜', desc: '傲娇嫌弃、眨眼得意、逗趣', keys: ['playful', 'pout', 'smug'], keywords: ['调皮', '傲娇', '得意', '眯眼', 'playful', 'pout', 'smug'] },
+    { id: 'sad', label: '悲伤', icon: '😢', desc: '打断失落、难过低头', keys: ['sad'], keywords: ['难过', '悲伤', '委屈', '低头', 'sad'] },
+    { id: 'cry', label: '哭', icon: '😭', desc: '委屈流泪、大哭', keys: ['cry'], keywords: ['哭', '流泪', '眼泪', 'cry', 'tear', '1流泪', '哭哭'] },
+    { id: 'grumpy', label: '生气', icon: '💢', desc: '抗议不满、鼓脸气愤', keys: ['grumpy', 'angry'], keywords: ['生气', '怒', '鼓脸', 'angry', '1生气'] },
+    { id: 'gloomy', label: '阴暗', icon: '🌧️', desc: '工具报错、心情低落、长蘑菇', keys: ['gloomy'], keywords: ['黑脸', '阴暗', 'heilian', 'gloomy', '1黑脸'] },
+    { id: 'sweat', label: '流汗', icon: '😅', desc: '擦汗、撤回、吃力', keys: ['sweat'], keywords: ['汗', '冷汗', '流汗', 'sweat'] },
+    { id: 'confused', label: '问号', icon: '❓', desc: '歪头不解、需要主人确认', keys: ['confused'], keywords: ['问号', '疑惑', '疑问', 'confused', 'dizzy'] },
+    { id: 'alert', label: '感叹号', icon: '❗', desc: '猛地抬头、睡醒、受惊', keys: ['alert'], keywords: ['惊', '感叹号', 'alert'] },
+    { id: 'sleepy', label: '闭眼口水', icon: '😴', desc: '待机犯困、打瞌睡、做梦', keys: ['sleepy'], keywords: ['zzz', '睡', '困', '口水', 'sleep', 'sleepy'] },
+    { id: 'tongue', label: '吐舌', icon: '👅', desc: '调皮调侃、扮鬼脸略略略', keys: ['tongue'], keywords: ['舌头', '吐舌', 'tongue'] },
+    { id: 'dead', label: '吐魂', icon: '👻', desc: '摸鱼被抓、大招耗尽、累瘫', keys: ['dead'], keywords: ['吐魂', '灵魂', '瘫', 'dead', '0.0'] },
+  ]
+
+  const STANDARD_ACTION_SLOTS = [
+    { id: 'idle', label: '待机动作', icon: '🌀', desc: '常态待机循环', keywords: ['idle', 'scene1', '待机', 'wait', 'stand'] },
+    { id: 'click', label: '摸摸交互', icon: '👆', desc: '单次点击摸头反馈', keywords: ['click', 'tap', 'touch', '扇子', 'idle2', '摸'] },
+    { id: 'done', label: '完成任务', icon: '🎉', desc: '任务完成庆祝', keywords: ['done', 'yes', 'cheer', '点唇'] },
+  ]
 
   /**
    * 装饰品（粘性开关）：戴上就一直挂着，直到你再点一下摘掉。group 相同的互斥。
@@ -428,6 +994,14 @@
     xlsx_read: { mood: 'reading', prop: 'auto' },
     pptx_read: { mood: 'reading', prop: 'auto' },
     skill: { mood: 'reading', prop: 'auto' },
+
+    // —— 桌面灵视觉工具支持 ——
+    screen_capture: { mood: 'reading', prop: 'glassesRound' },
+    template_match_click: { mood: 'thinking', prop: 'auto' },
+    desktop_click: { mood: 'happy', prop: 'auto' },
+    desktop_double_click: { mood: 'happy', prop: 'auto' },
+    desktop_type: { mood: 'working', prop: 'auto' },
+    get_desktop_windows: { mood: 'reading', prop: 'auto' },
 
     // —— 干活：认真看本子，不摆手、不卖萌 ——
     bash: { mood: 'reading', prop: null },
@@ -746,7 +1320,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 .dshp-panel textarea:focus{border-color:var(--dshp-accent)}
 .dshp-row{display:flex;gap:6px;align-items:center;margin-top:7px;flex-wrap:wrap}
 .dshp-grow{flex:1}
-.dshp-tabs{display:flex;gap:3px;margin-bottom:7px;border-bottom:1px solid var(--dshp-line);padding-bottom:6px}
+.dshp-tabs{display:flex;flex-wrap:wrap;gap:3px 4px;margin-bottom:7px;border-bottom:1px solid var(--dshp-line);padding-bottom:6px}
+.dshp-map-row{display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;background:rgba(0,0,0,.15);padding:4px 6px;border-radius:6px}
+.dshp-map-row select{flex:1 1 0%!important;min-width:0!important;width:0!important;max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}
+.dshp-map-row button{flex-shrink:0!important;white-space:nowrap!important}
 .dshp-tab-btn{border:none;background:transparent;color:inherit;opacity:.6;font:inherit;font-size:11.5px;
   padding:3px 9px;border-radius:7px;cursor:pointer}
 .dshp-tab-btn.dshp-active{opacity:1;background:rgba(124,92,255,.14);color:var(--dshp-accent);font-weight:600}
@@ -863,6 +1440,11 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
   /** 表情名 → 参数增量表（已过滤掉模型里不存在的参数） */
   const EXPR = {}
+  /** 鲸鱼娘基准黄金标准快照（不可更改） */
+  const BASE_WHALE_EXPR = {}
+  const BASE_WHALE_MOOD_FACE = {}
+  /** 当前非鲸鱼娘角色的已扫描可用资源（表情与动作列表） */
+  let currentCharacterAssets = { characterId: null, expressions: [], motions: [], categories: { decor: [], scene: [], action: [], emotion: [] } }
   /** 最近一次取景结果，供诊断用 */
   let lastView = null
   /** 角色实体在模型画布里的归一化范围，启动时测一次；null = 没测出来（退回整张画布） */
@@ -1071,12 +1653,22 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     rig.userProps.clear()
     resolveRig()
     saveLayout({ props: [] })
+    if (activeCharacterId === 'tutu' && coreModel) {
+      try {
+        coreModel.setParameterValueById('Param122', 0.0)
+        coreModel.setParameterValueById('Param123', 1.0)
+      } catch (e) {}
+    }
+    resumeCharacterIdleMotion()
   }
 
   function restoreProps() {
     const saved = readLayout().props
     if (!Array.isArray(saved)) return
-    for (const expr of saved) if (EXPR[expr]) rig.userProps.add(expr)
+    for (const expr of saved) {
+      if (expr && (expr.includes('飞头') || expr === 'Param122')) continue
+      if (EXPR[expr]) rig.userProps.add(expr)
+    }
     resolveRig()
   }
 
@@ -1214,12 +1806,61 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     // 诊断：这一帧有多少次「因为参数已被占用而放弃写入」。
     // 它 > 0 就说明独占裁决真的在起作用（两个表情想写同一个参数时被打回）。
     rig.exclusive = { written: delta.size, skipped, writers: winners }
-    for (const [id, v] of delta) {
-      if (Math.abs(v) < 0.001) continue
-      try {
-        coreModel.addParameterValueById(id, v)
-      } catch (e) {}
+
+    if (!applyRig._appliedParams) applyRig._appliedParams = new Set()
+
+    if (activeCharacterId === 'whale') {
+      for (const [id, v] of delta) {
+        if (Math.abs(v) < 0.001) continue
+        try {
+          coreModel.addParameterValueById(id, v)
+        } catch (e) {}
+      }
+    } else {
+      // 非鲸鱼娘角色（如兔兔、玉玉等）：
+      // 1. 复位上一帧曾写入过、但本帧已淡出归零的参数，防止参数冻结累积
+      for (const id of applyRig._appliedParams) {
+        if (!delta.has(id)) {
+          const def = (activeCharacterId === 'tutu' && id === 'Param123') ? 1.0 : (paramDefault(id) ?? 0)
+          try {
+            coreModel.setParameterValueById(id, def)
+          } catch (e) {}
+        }
+      }
+      applyRig._appliedParams.clear()
+
+      // 2. 写入当前帧的绝对计算值 (default + delta)
+      for (const [id, v] of delta) {
+        const def = (activeCharacterId === 'tutu' && id === 'Param123') ? 1.0 : (paramDefault(id) ?? 0)
+        if (Math.abs(v) < 0.001) {
+          try {
+            coreModel.setParameterValueById(id, def)
+          } catch (e) {}
+          continue
+        }
+        applyRig._appliedParams.add(id)
+        try {
+          coreModel.setParameterValueById(id, def + v)
+        } catch (e) {}
+      }
     }
+
+    // 强保特殊角色常驻参数（例如兔兔的去水印/模型显示 Param123）
+    try {
+      const curChar = CHARACTERS[activeCharacterId]
+      if (curChar && curChar.defaultParams) {
+        for (const [pId, pVal] of Object.entries(curChar.defaultParams)) {
+          coreModel.setParameterValueById(pId, pVal)
+        }
+      }
+      if (activeCharacterId === 'tutu') {
+        coreModel.setParameterValueById('Param123', 1.0)
+        // 关键防御：若当前没有在表演飞头（Param122），强保 Param122 恢复为 0.0，本体完整显现！
+        if (!delta.has('Param122') || Math.abs(delta.get('Param122')) < 0.001) {
+          coreModel.setParameterValueById('Param122', 0.0)
+        }
+      }
+    } catch (e) {}
   }
 
   /**
@@ -1289,6 +1930,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     // 例外：干活时如果小设备已经掏出来了（查资料），别把它收掉——
     // 互动只是插一下，互动完要回到「正在查资料」的样子。
     if (!device.out) stopMotion()
+    if (activeCharacterId !== 'whale') {
+      resumeCharacterIdleMotion()
+    }
   }
 
   /**
@@ -1303,21 +1947,36 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
    * 所以停动作时要做两件事：① 把这些参数设回默认值 ② 重新 save 一次，把快照换成默认姿势。
    */
   function clearMotionPose() {
-    if (!coreModel || !manifest) return 0
+    if (!coreModel) return 0
     const ids = new Set()
-    for (const meta of Object.values(manifest.motions || {})) {
-      for (const id of meta.params || []) ids.add(id)
+    if (manifest && manifest.motions) {
+      for (const meta of Object.values(manifest.motions || {})) {
+        for (const id of meta.params || []) ids.add(id)
+      }
+    }
+    if (currentCharacterAssets && Array.isArray(currentCharacterAssets.expressions)) {
+      for (const exp of currentCharacterAssets.expressions) {
+        for (const p of exp.params || []) ids.add(p.id)
+      }
     }
     let n = 0
     let bad = 0
     for (const id of ids) {
       try {
-        const def = paramDefault(id)
+        let def = paramDefault(id)
+        if (activeCharacterId === 'tutu' && id === 'Param123') def = 1.0
+        if (activeCharacterId === 'tutu' && id === 'Param122') def = 0.0
         // 取不到默认值的参数一律**不要碰**！之前就是在这里把「睁眼」参数当成了 0，
         // 结果把眼睛永久设成闭着的（主人报的「一直闭着眼，啥也干不了」）。
         if (def === null) { bad++; continue }
         if (typeof coreModel.setParameterValueById === 'function') coreModel.setParameterValueById(id, def)
         n++
+      } catch (e) {}
+    }
+    if (activeCharacterId === 'tutu') {
+      try {
+        coreModel.setParameterValueById('Param123', 1.0)
+        coreModel.setParameterValueById('Param122', 0.0)
       } catch (e) {}
     }
     if (bad && !clearMotionPose._warned) {
@@ -1506,8 +2165,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       ui = buildUI()
       await loadRuntime()
       const [man, cdi] = await Promise.all([
-        fetch(BASE + '/model/manifest.json', { cache: 'no-cache' }).then((r) => r.json()),
-        fetch(BASE + '/model/c_0120.cdi3.json', { cache: 'no-cache' }).then((r) => r.json()),
+        apiFetch(BASE + '/model/manifest.json', { cache: 'no-cache' }).catch(() => ({})),
+        apiFetch(BASE + '/model/c_0120.cdi3.json', { cache: 'no-cache' }).catch(() => ({})),
       ])
       manifest = man
       MODEL_PARAMS = new Set((cdi.Parameters || []).map((p) => p.Id))
@@ -1519,6 +2178,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         }
         if (kept.length) EXPR[name] = kept
       }
+      // 永久保存鲸鱼娘黄金标准快照（不可更改）
+      for (const k of Object.keys(EXPR)) BASE_WHALE_EXPR[k] = EXPR[k]
+      for (const k of Object.keys(MOOD_FACE)) BASE_WHALE_MOOD_FACE[k] = MOOD_FACE[k]
+
       if (droppedParams.size) {
         log(`已忽略 ${droppedParams.size} 个模型里不存在的参数引用：`, Array.from(droppedParams).join('、'))
       }
@@ -1616,34 +2279,40 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     applyPerf()
     ui.stage.appendChild(app.view)
 
-    const { Live2DModel } = PIXI.live2d
-    Live2DModel.registerTicker(PIXI.Ticker)
-
-    model = await Live2DModel.from(BASE + '/model/c_0120.model3.json', {
-      autoInteract: false,
-      autoUpdate: true,
-      idleMotionGroup: 'idle',
-    })
-    model.eventMode = 'none'
-    app.stage.addChild(model)
-
-    const internal = model.internalModel
-    coreModel = internal.coreModel
-
-    // rig 挂载点：model.update() 之前的最后一站
-    internal.on('beforeModelUpdate', applyRig)
-
-    // 关掉框架自带的眨眼，改用我们自己的 blinkTick（节奏更像人）
-    try {
-      if (internal.eyeBlink) internal.eyeBlink = undefined
-    } catch (e) {}
-
-
-    // 掩码在 postrender 里采：此刻 WebGL 缓冲刚画好，且模型的世界变换已生效。
-    // 必须在测量之前注册——测量就是靠它把画面读出来算实体范围的。
+    // 掩码在 postrender 里采：时刻保持注册
     app.renderer.on('postrender', () => {
       if (mask.dirty && !mask.building) buildMask()
     })
+
+    // 动态同步角色清单与配置
+    try {
+      const json = await apiFetch(BASE + '/characters')
+      if (json && json.characters) {
+        for (const c of json.characters) {
+          const existing = CHARACTERS[c.id] || {}
+          const modelUrl = c.modelFile
+            ? BASE + '/characters/' + c.id + '/model/' + encodeURIComponent(c.modelFile)
+            : (existing.modelUrl || (BASE + '/characters/' + c.id + '/model/' + encodeURIComponent(c.id + '.model3.json')))
+          CHARACTERS[c.id] = Object.assign(existing, {
+            id: c.id,
+            name: c.name || existing.name,
+            title: (c.persona && c.persona.title) || c.title || existing.title || c.name,
+            modelUrl,
+            scale: c.scale || existing.scale || 0.25,
+            defaultParams: c.defaultParams || existing.defaultParams || {},
+            expressions: c.expressions || existing.expressions || {},
+            motions: c.motions || existing.motions || {},
+            voice: c.voice || existing.voice || {},
+          })
+        }
+      }
+      if (json && json.active && CHARACTERS[json.active]) {
+        activeCharacterId = json.active
+      }
+    } catch (e) {}
+
+    // 根据配置或默认值自动加载对应角色（不再死写鲸鱼娘）
+    await loadCharacterModel(activeCharacterId)
 
     const box = await fitFromMeasurement()
     applyPosition(layout)
@@ -1657,10 +2326,13 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       else app.ticker.start()
     })
 
-    log(
-      `模型原始尺寸 ${Math.round(internal.originalWidth)}×${Math.round(internal.originalHeight)}` +
-        (box ? ` · 布局 ${box.w}×${box.h}（${box.mode}，缩放 ${box.scale}）` : ''),
-    )
+    const im = model && model.internalModel
+    if (im) {
+      log(
+        `模型原始尺寸 ${Math.round(im.originalWidth || im.width || 0)}×${Math.round(im.originalHeight || im.height || 0)}` +
+          (box ? ` · 布局 ${box.w}×${box.h}（${box.mode}，缩放 ${box.scale}）` : ''),
+      )
+    }
   }
 
   /**
@@ -1858,7 +2530,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     mask.bbox = null
 
     const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()))
-    const deadline = performance.now() + 3000
+    const deadline = performance.now() + 800
     while (performance.now() < deadline) {
       await nextFrame()
       if (mask.bbox && !mask.dirty) return Object.assign({}, mask.bbox, { bands: mask.bands })
@@ -2975,10 +3647,18 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         if (!hitTest(e.clientX, e.clientY)) return
         e.preventDefault()
         e.stopPropagation()
-        // 主人要求：右键弹「余额 / 本轮消耗 / 峰谷」这个框，不再直接弹设置菜单
-        // （设置还在工具栏的 ⋯ 里，没有丢）
-        if (hud.open) closeHud()
-        else openHud({ flash: true, refresh: true })
+        // 右键直接打开伴侣主菜单并聚焦在「角色」Tab
+        if (ui.menu.el.classList.contains('dshp-on') && ui.menu.focused === 'character') {
+          closePanels()
+        } else {
+          ui.menu.focused = 'character'
+          if (ui.menu.tabs) {
+            for (const el of ui.menu.tabs.children) {
+              el.classList.toggle('dshp-active', el.dataset.tab === 'character')
+            }
+          }
+          openMenu('menu')
+        }
       },
       true,
     )
@@ -3795,6 +4475,15 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     rig.talking = false
     setBase('neutral', IDLE_PROPS)
     stopMotion() // 回到模型默认姿势 = 正常坐姿
+    if (activeCharacterId === 'tutu' && coreModel) {
+      try {
+        coreModel.setParameterValueById('Param122', 0.0)
+        coreModel.setParameterValueById('Param123', 1.0)
+      } catch (e) {}
+    }
+    if (activeCharacterId !== 'whale') {
+      resumeCharacterIdleMotion()
+    }
     closePanels()
     ui.bubble.hide()
     setHidden(false)
@@ -3840,12 +4529,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     send.addEventListener('click', doSend)
     cancel.addEventListener('click', async () => {
       try {
-        const r = await fetch(BASE + '/cancel', {
+        const j = await apiFetch(BASE + '/cancel', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: '{}',
         })
-        const j = await r.json()
         u.bubble.show(j.ok ? '打断啦' : '打断失败：' + (j.error || '未知'), { name: 'DS 鲸鱼娘', ttl: 2000 })
       } catch (err) {
         u.bubble.show('打断失败：' + err.message, { name: 'DS 鲸鱼娘', ttl: 2600 })
@@ -3860,12 +4547,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
       send.disabled = true
       try {
-        const r = await fetch(BASE + '/say', {
+        const j = await apiFetch(BASE + '/say', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
         })
-        const j = await r.json()
         if (!j.ok) throw new Error(j.error || '发送失败')
         ta.value = ''
         closePanels()
@@ -3902,15 +4587,27 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     clampPanels()
   }
 
+  function updateMenuTabLabels() {
+    if (!ui || !ui.menu || !ui.menu.tabs) return
+    for (const b of ui.menu.tabs.children) {
+      if (b.dataset.tab === 'face') {
+        b.textContent = activeCharacterId === 'whale' ? '表情' : '表情映射'
+      }
+    }
+  }
+
   function bindMenu(u) {
     const TABS = [
+      ['character', '角色'],
+      ['voice', '声音'],
       ['face', '表情'],
       ['decor', '装饰'],
       ['scene', '场景'],
       ['action', '动作'],
       ['setting', '设置'],
+      ['wallet', '钱包'],
     ]
-    u.menu.focused = 'face'
+    u.menu.focused = 'character'
     for (const [id, label] of TABS) {
       const b = $('button', 'dshp-tab-btn', label)
       b.dataset.tab = id
@@ -3922,6 +4619,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
       u.menu.tabs.appendChild(b)
     }
+    updateMenuTabLabels()
     // 主人要求：说话按钮点一次开、再点一次关（以前再点只会重新打开，像关不掉）
     u.dock.children[0].addEventListener('click', () => {
       if (u.composer.el.classList.contains('dshp-on')) closePanels()
@@ -3948,119 +4646,1564 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     panes.textContent = ''
     // 顶上永远有一行「她现在是什么状态」，免得一堆按钮里看不出哪个是开着的
     panes.appendChild($('div', 'dshp-hint dshp-now', menuStatusLine()))
-    if (id === 'face') {
+
+    if (id === 'character') {
+      const charBox = $('div', 'dshp-col')
+      charBox.style.display = 'flex'
+      charBox.style.flexDirection = 'column'
+      charBox.style.gap = '10px'
+
+      const title = $('div', 'dshp-hint', '当前伴侣：' + activeCharInfo().name + '（' + activeCharInfo().title + '）')
+      title.style.fontWeight = 'bold'
+      title.style.color = '#7c5cff'
+      charBox.appendChild(title)
+
       const grid = $('div', 'dshp-grid')
-      // 主人抱怨「星星眼重复了两次」——一个表情（参数组合）本来对应好几种情绪，
-      // 旧的菜单按情绪列，于是同一个表情出现好几遍。这里按**表情**去重：
-      // 一个表情只出一个按钮，鼠标悬停能看到它代表哪些情绪。
-      const byExpr = new Map()
-      // 主人明确不要的只有「圈圈眼（晕晕）」；呆呆眼另有判断。
-      // 「闭眼口水」是原作者按键表里的正经表情（Alt+T），保留。
-      const BANNED_MOODS = new Set(['dizzy'])
-      for (const key of Object.keys(MOOD_FACE)) {
-        if (key === 'neutral') continue
-        const expr = MOOD_FACE[key]
-        if (!expr || BANNED_MOODS.has(key)) continue
-        if (!EXPR[expr] || expr === '呆呆眼' || expr === '晕晕') continue
-        if (!byExpr.has(expr)) byExpr.set(expr, [])
-        byExpr.get(expr).push(key)
+      grid.style.display = 'grid'
+      grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(130px, 1fr))'
+      grid.style.gap = '8px'
+
+      const builtins = ['whale', 'tutu', 'yuyu', 'xiaoxiao', 'keke']
+      for (const [key, char] of Object.entries(CHARACTERS)) {
+        const itemWrap = $('div')
+        itemWrap.style.display = 'flex'
+        itemWrap.style.alignItems = 'center'
+        itemWrap.style.gap = '4px'
+        itemWrap.style.width = '100%'
+
+        const b = $('button', 'dshp-chip', char.name + ' · ' + (char.title || '伴侣'))
+        b.style.flex = '1 1 0%'
+        b.style.minWidth = '0'
+        b.style.padding = '8px 6px'
+        b.style.fontSize = '12px'
+        b.style.textAlign = 'center'
+        b.style.overflow = 'hidden'
+        b.style.textOverflow = 'ellipsis'
+        b.style.whiteSpace = 'nowrap'
+
+        if (activeCharacterId === key) {
+          b.classList.add('dshp-on')
+          b.style.background = '#7c5cff'
+          b.style.color = '#fff'
+          b.style.fontWeight = 'bold'
+        }
+        b.addEventListener('click', async () => {
+          await switchCharacter(key)
+          renderPane('character')
+        })
+        itemWrap.appendChild(b)
+
+        // 自定义导入角色支持删除
+        if (!builtins.includes(key)) {
+          const delBtn = $('button', 'dshp-btn', '🗑️')
+          delBtn.style.padding = '6px 7px'
+          delBtn.style.fontSize = '11px'
+          delBtn.style.flexShrink = '0'
+          delBtn.style.border = '1px solid rgba(255, 77, 79, 0.4)'
+          delBtn.style.borderRadius = '6px'
+          delBtn.style.background = 'rgba(255, 77, 79, 0.1)'
+          delBtn.style.color = '#ff4d4f'
+          delBtn.style.cursor = 'pointer'
+          delBtn.title = `彻底删除伴侣「${char.name}」`
+          delBtn.addEventListener('click', async (ev) => {
+            ev.stopPropagation()
+            if (!confirm(`确定要彻底删除伴侣「${char.name}」吗？\n（将从伴侣库及磁盘中安全移除）`)) return
+            delBtn.disabled = true
+            delBtn.textContent = '⏳'
+            try {
+              const res = await apiFetch(BASE + '/delete-character', {
+                method: 'POST',
+                body: JSON.stringify({ characterId: key }),
+              })
+              if (!res.ok) {
+                alert('删除失败: ' + (res.error || '未知错误'))
+                delBtn.disabled = false
+                delBtn.textContent = '🗑️'
+                return
+              }
+              delete CHARACTERS[key]
+              if (activeCharacterId === key) {
+                await switchCharacter('tutu')
+              }
+              renderPane('character')
+              ui.bubble.show(`伴侣「${char.name}」已安全删除~`, { duration: 3000 })
+            } catch (err) {
+              alert('删除异常: ' + ((err && err.message) || err))
+              delBtn.disabled = false
+              delBtn.textContent = '🗑️'
+            }
+          })
+          itemWrap.appendChild(delBtn)
+        }
+
+        grid.appendChild(itemWrap)
       }
-      const neutral = $('button', 'dshp-chip', '平常')
-      if (!rig.override && !rig.user.face) neutral.classList.add('dshp-on')
-      neutral.title = '立刻回到平常脸（她自己的表情也交还给她）'
-      neutral.addEventListener('click', () => {
-        clearUserFace()
-        clearReaction()
-        act({ mood: 'neutral', props: IDLE_PROPS, ms: 800 })
-        renderPane('face')
-      })
-      grid.appendChild(neutral)
-      for (const [expr, keys] of byExpr) {
-        // 挑一个「有专属台词」的情绪名当代表，这样每个按钮点了都真有反应
-        const rep = keys.find((k) => FACE_ACT[k]) || keys[0]
-        const lines = (FACE_ACT[rep] && FACE_ACT[rep].lines) || []
-        const b = $('button', 'dshp-chip', expr)
-        // 亮着的判断看**当前这一次性表演**，不是看手动层：菜单里的表情是临时的，
-        // 谁最后一个说话谁亮。
-        if (rig.override && rig.override.face === expr) b.classList.add('dshp-on')
-        b.title = keys.join(' / ') + (lines.length ? `\n她会说：${lines[0]}` : '')
-        b.addEventListener('click', () => {
-          // 主人要的规矩：菜单表情**不是手动常驻**，是「点一下演三四秒」——
-          //   · 3~4 秒后自己让位，平常状态永远回到「平常脸」
-          //   · 期间任何新表情（她自己挑的 / agent 事件 / 你再点一个）都会把它顶掉
-          // 所以这里不写 30 秒的 rig.user 手动层，只走一次性 override。
-          clearUserFace()
-          playItem('face', rep)
+      charBox.appendChild(grid)
+
+      if (activeCharacterId !== 'whale') {
+        const mapShortcut = $('button', 'dshp-btn', `⚙ 配置 ${activeCharInfo().name} 的表情与动作映射`)
+        mapShortcut.style.fontSize = '12px'
+        mapShortcut.style.padding = '6px 12px'
+        mapShortcut.style.marginTop = '4px'
+        mapShortcut.style.alignSelf = 'flex-start'
+        mapShortcut.addEventListener('click', () => {
+          ui.menu.focused = 'face'
+          for (const el of ui.menu.tabs.children) el.classList.toggle('dshp-active', el.dataset.tab === 'face')
           renderPane('face')
         })
-        grid.appendChild(b)
+        charBox.appendChild(mapShortcut)
       }
-      panes.append(
-        grid,
-        $('div', 'dshp-hint', '点一下 = 换脸 + 说一句配好的话，**三四秒后自己让位**（平常状态永远是平常脸）。\n期间她自己的表情、agent 事件、或者你再点一个，都会把它顶掉。'),
-      )
+
+      // 导入新角色卡片
+      const importCard = $('div', 'dshp-panel-card')
+      importCard.style.marginTop = '12px'
+      importCard.style.padding = '10px 12px'
+      importCard.style.background = 'rgba(124, 92, 255, 0.08)'
+      importCard.style.borderRadius = '10px'
+      importCard.style.border = '1px dashed rgba(124, 92, 255, 0.4)'
+
+      const cardHead = $('div', null, '➕ 导入新 Live2D 角色')
+      cardHead.style.fontWeight = 'bold'
+      cardHead.style.marginBottom = '6px'
+      cardHead.style.fontSize = '13px'
+
+      const pathInput = document.createElement('input')
+      pathInput.type = 'text'
+      pathInput.placeholder = '请输入模型文件夹路径 (含 .model3.json)'
+      pathInput.style.width = '100%'
+      pathInput.style.padding = '6px 8px'
+      pathInput.style.marginBottom = '6px'
+      pathInput.style.borderRadius = '6px'
+      pathInput.style.border = '1px solid rgba(0,0,0,0.15)'
+      pathInput.style.boxSizing = 'border-box'
+      pathInput.style.fontSize = '12px'
+
+      const nameInput = document.createElement('input')
+      nameInput.type = 'text'
+      nameInput.placeholder = '角色昵称 (如: 我的新伴侣)'
+      nameInput.style.width = '100%'
+      nameInput.style.padding = '6px 8px'
+      nameInput.style.marginBottom = '8px'
+      nameInput.style.borderRadius = '6px'
+      nameInput.style.border = '1px solid rgba(0,0,0,0.15)'
+      nameInput.style.boxSizing = 'border-box'
+      nameInput.style.fontSize = '12px'
+
+      const importBtn = $('button', 'dshp-btn dshp-primary', '一键导入并切换')
+      importBtn.style.width = '100%'
+      importBtn.style.padding = '7px'
+      importBtn.style.background = '#7c5cff'
+      importBtn.style.color = '#fff'
+      importBtn.style.fontWeight = 'bold'
+      importBtn.style.borderRadius = '6px'
+      importBtn.style.cursor = 'pointer'
+
+      const tipText = $('div', 'dshp-hint', '支持任意标准 Cubism 3/4 模型文件夹，导入后会自动加入角色库并即时挂载。')
+      tipText.style.marginTop = '6px'
+      tipText.style.fontSize = '11px'
+
+      importBtn.addEventListener('click', async () => {
+        const p = pathInput.value.trim()
+        const n = nameInput.value.trim()
+        if (!p) {
+          alert('请先输入模型文件夹的绝对路径！')
+          return
+        }
+        importBtn.textContent = '正在扫描并导入模型...'
+        importBtn.disabled = true
+        try {
+          const data = await apiFetch(BASE + '/import-character', {
+            method: 'POST',
+            body: JSON.stringify({ sourcePath: p, name: n }),
+          })
+          if (!data.ok) {
+            alert('导入失败: ' + (data.error || '未知错误'))
+            importBtn.textContent = '一键导入并切换'
+            importBtn.disabled = false
+            return
+          }
+          const c = data.character
+          CHARACTERS[c.id] = {
+            id: c.id,
+            name: c.name,
+            title: (c.persona && c.persona.title) || c.title || c.name,
+            modelUrl: BASE + '/characters/' + c.id + '/model/' + encodeURIComponent(c.modelFile),
+            scale: c.scale || 0.25,
+            defaultParams: c.defaultParams || {},
+            expressions: c.expressions || {},
+            motions: c.motions || {},
+            categories: c.categories || {},
+          }
+          await switchCharacter(c.id)
+          renderPane('character')
+        } catch (err) {
+          alert('导入异常: ' + ((err && err.message) || err))
+          importBtn.textContent = '一键导入并切换'
+          importBtn.disabled = false
+        }
+      })
+
+      importCard.append(cardHead, pathInput, nameInput, importBtn, tipText)
+      charBox.appendChild(importCard)
+      panes.appendChild(charBox)
       return
     }
-    if (id === 'decor' || id === 'scene') {
-      const src = id === 'decor' ? PROPS : SCENES
-      const grid = $('div', 'dshp-grid')
-      for (const [key, def] of Object.entries(src)) {
-        if (!EXPR[def.expr]) continue
-        // 「开着」看的是**主人自己开的那一层**。用 rig.props 判断的话，
-        // 本子/笔这种常态道具永远显示成已开启，再点也没反应——就是主人说的「点了没用」。
-        const on = itemOn(key, def)
-        const b = $('button', 'dshp-chip', def.label)
-        if (on) b.classList.add('dshp-on')
-        const lines = (SCENE_ACT[key] && SCENE_ACT[key].lines) || (PROP_ACT[key] && PROP_ACT[key].lines) || []
-        const tip = on ? '再点一下收起来' : lines.length ? `点了她会说：${lines[0]}` : ''
-        b.title = def.key ? `${tip}\n（原作者热键：${def.key}）` : tip
-        b.addEventListener('click', () => {
-          const nowOn = itemOn(key, def)
-          setProp(key, !nowOn)
-          if (!nowOn) playItem(id, key)
-          renderPane(id)
+
+
+    if (id === 'voice') {
+      const box = $('div', 'dshp-col')
+      box.style.display = 'flex'
+      box.style.flexDirection = 'column'
+      box.style.gap = '10px'
+
+      const statusTitle = $('div', 'dshp-hint', '当前伴侣：' + activeCharInfo().name + ' · ' + activeCharInfo().title)
+      statusTitle.style.fontWeight = 'bold'
+      statusTitle.style.color = '#7c5cff'
+
+      // 1. 基础音效与口型开关
+      const basicRow = $('div', 'dshp-row')
+      basicRow.style.display = 'flex'
+      basicRow.style.gap = '6px'
+
+      const soundBtn = $('button', 'dshp-btn' + (CFG.sound ? ' dshp-primary' : ''), CFG.sound ? '🔊 伴侣语音：开启' : '🔈 伴侣语音：静音')
+      soundBtn.style.flex = '1'
+      soundBtn.style.padding = '6px 10px'
+      soundBtn.style.fontWeight = 'bold'
+      soundBtn.addEventListener('click', () => {
+        CFG.sound = !CFG.sound
+        persistCfg()
+        soundBtn.textContent = CFG.sound ? '🔊 伴侣语音：开启' : '🔈 伴侣语音：静音'
+        soundBtn.classList.toggle('dshp-primary', CFG.sound)
+        ui.bubble.show(CFG.sound ? '伴侣语音已开启，我会为你概括朗读哦~' : '伴侣语音已静音。', { sticky: false, duration: 2500 })
+      })
+
+      const mouthBtn = $('button', 'dshp-btn' + (CFG.talkMouth ? ' dshp-primary' : ''), CFG.talkMouth ? '👄 口型同步：开启' : '👄 口型同步：关闭')
+      mouthBtn.style.flex = '1'
+      mouthBtn.style.padding = '6px 10px'
+      mouthBtn.addEventListener('click', () => {
+        CFG.talkMouth = !CFG.talkMouth
+        persistCfg()
+        mouthBtn.textContent = CFG.talkMouth ? '👄 口型同步：开启' : '👄 口型同步：关闭'
+        mouthBtn.classList.toggle('dshp-primary', CFG.talkMouth)
+      })
+      basicRow.append(soundBtn, mouthBtn)
+
+      // 音量滑块
+      const volLabel = $('label', 'dshp-label')
+      volLabel.append($('span', null, '语音音量'))
+      const volRange = document.createElement('input')
+      volRange.type = 'range'
+      volRange.min = '0'; volRange.max = '1'; volRange.step = '0.05'
+      volRange.value = String(CFG.ttsVolume ?? 1.0)
+      const volVal = $('span', null, Math.round(Number(volRange.value) * 100) + '%')
+      volVal.style.minWidth = '36px'
+      volVal.style.textAlign = 'right'
+      volRange.addEventListener('input', () => {
+        CFG.ttsVolume = Number(volRange.value)
+        persistCfg()
+        volVal.textContent = Math.round(CFG.ttsVolume * 100) + '%'
+        if (currentAudioGain && audioCtx) {
+          try {
+            currentAudioGain.gain.setValueAtTime(CFG.ttsVolume, audioCtx.currentTime)
+          } catch (e) {}
+        }
+        if (currentAudioElement) {
+          try {
+            currentAudioElement.volume = CFG.ttsVolume
+          } catch (e) {}
+        }
+      })
+      volLabel.append(volRange, volVal)
+
+      // 2. ✨ 提示词声音生成器卡片
+      const genCard = $('div', 'dshp-panel-card')
+      genCard.style.padding = '10px 12px'
+      genCard.style.background = 'rgba(124, 92, 255, 0.08)'
+      genCard.style.borderRadius = '10px'
+      genCard.style.border = '1px solid rgba(124, 92, 255, 0.3)'
+      genCard.style.display = 'flex'
+      genCard.style.flexDirection = 'column'
+      genCard.style.gap = '8px'
+
+      const genTitle = $('div', null, '✨ 提示词声音生成器（自然语言捏音）')
+      genTitle.style.fontWeight = 'bold'
+      genTitle.style.color = '#9a82ff'
+      genTitle.style.fontSize = '12.5px'
+
+      const promptInput = document.createElement('textarea')
+      promptInput.rows = 2
+      promptInput.placeholder = '输入声音风格提示词，例如：元气甜美少女、略带傲娇、冷艳成熟御姐、温柔治愈知心姐姐、幽默风趣...'
+      promptInput.value = (activeCharInfo().voice && activeCharInfo().voice.prompt) || ''
+      promptInput.style.width = '100%'
+      promptInput.style.boxSizing = 'border-box'
+      promptInput.style.fontSize = '11px'
+      promptInput.style.padding = '6px 8px'
+      promptInput.style.borderRadius = '6px'
+      promptInput.style.background = 'rgba(0, 0, 0, 0.25)'
+      promptInput.style.color = '#eee'
+      promptInput.style.border = '1px solid rgba(124, 92, 255, 0.3)'
+      promptInput.style.resize = 'vertical'
+
+      // 快捷预设提示词
+      const presetRow = $('div')
+      presetRow.style.display = 'flex'
+      presetRow.style.flexWrap = 'wrap'
+      presetRow.style.gap = '4px'
+
+      const PRESETS = [
+        ['✨ 元气甜美', '元气甜美活泼少女，语调轻快'],
+        ['✨ 冷艳御姐', '冷艳成熟御姐，语调平静优雅带气场'],
+        ['✨ 温柔治愈', '温柔治愈系大姐姐，语气柔和轻缓'],
+        ['✨ 傲娇萌妹', '傲娇萌妹，有点小任性又很在乎主人'],
+        ['✨ 沉稳知性', '沉稳知性女青年，咬字清晰干练'],
+        ['✨ 软萌台湾腔', '软萌可爱的台湾腔调，亲切甜美'],
+      ]
+      for (const [tag, text] of PRESETS) {
+        const chip = $('button', 'dshp-chip', tag)
+        chip.style.fontSize = '10px'
+        chip.style.padding = '2px 6px'
+        chip.addEventListener('click', () => {
+          promptInput.value = text
         })
-        grid.appendChild(b)
+        presetRow.appendChild(chip)
       }
+
+      // 声学微调：语速与音调
+      const acousticRow = $('div')
+      acousticRow.style.display = 'grid'
+      acousticRow.style.gridTemplateColumns = '1fr 1fr'
+      acousticRow.style.gap = '8px'
+
+      const rateLabel = $('label', 'dshp-label')
+      rateLabel.style.fontSize = '11px'
+      rateLabel.append($('span', null, '语速微调'))
+      const rateRange = document.createElement('input')
+      rateRange.type = 'range'; rateRange.min = '-50'; rateRange.max = '50'; rateRange.step = '5'; rateRange.value = '0'
+      const rateOut = $('span', null, '0%')
+      rateRange.addEventListener('input', () => { rateOut.textContent = (Number(rateRange.value) >= 0 ? '+' : '') + rateRange.value + '%' })
+      rateLabel.append(rateRange, rateOut)
+
+      const pitchLabel = $('label', 'dshp-label')
+      pitchLabel.style.fontSize = '11px'
+      pitchLabel.append($('span', null, '音调微调'))
+      const pitchRange = document.createElement('input')
+      pitchRange.type = 'range'; pitchRange.min = '-20'; pitchRange.max = '20'; pitchRange.step = '2'; pitchRange.value = '0'
+      const pitchOut = $('span', null, '0Hz')
+      pitchRange.addEventListener('input', () => { pitchOut.textContent = (Number(pitchRange.value) >= 0 ? '+' : '') + pitchRange.value + 'Hz' })
+      pitchLabel.append(pitchRange, pitchOut)
+
+      acousticRow.append(rateLabel, pitchLabel)
+
+      // 测试文案输入框
+      const testInput = document.createElement('input')
+      testInput.type = 'text'
+      testInput.value = '主人好呀，听听看这是我新生成的声音，你喜欢吗？'
+      testInput.placeholder = '输入发声试听文案'
+      testInput.style.width = '100%'
+      testInput.style.boxSizing = 'border-box'
+      testInput.style.fontSize = '11px'
+      testInput.style.padding = '4px 8px'
+      testInput.style.borderRadius = '5px'
+      testInput.style.background = 'rgba(0,0,0,0.2)'
+      testInput.style.color = '#ddd'
+      testInput.style.border = '1px solid #444'
+
+      // 生成操作按钮
+      const genBtnRow = $('div', 'dshp-row')
+      genBtnRow.style.display = 'flex'
+      genBtnRow.style.gap = '6px'
+
+      let lastGeneratedVoice = null
+
+      const genPlayBtn = $('button', 'dshp-btn dshp-primary', '▶ 生成并试听声音')
+      genPlayBtn.style.flex = '1'
+      genPlayBtn.style.padding = '6px'
+      genPlayBtn.style.fontWeight = 'bold'
+      genPlayBtn.addEventListener('click', async () => {
+        const p = promptInput.value.trim()
+        if (!p) {
+          ui.bubble.show('请先填写声音提示词或点击预设标签！', { duration: 2000 })
+          return
+        }
+        genPlayBtn.textContent = '正在通过 9880 智能生成...'
+        genPlayBtn.disabled = true
+        try {
+          const resData = await apiFetch(BASE + '/generate-voice', {
+            method: 'POST',
+            body: JSON.stringify({
+              characterId: activeCharacterId,
+              prompt: p,
+              text: testInput.value.trim(),
+              rate: Number(rateRange.value),
+              pitch: Number(pitchRange.value),
+            }),
+          })
+          if (resData && resData.ok && resData.audioUrl) {
+            lastGeneratedVoice = resData.voice
+            if (activeCharInfo()) {
+              activeCharInfo().voice = Object.assign(activeCharInfo().voice || {}, {
+                voice_name: resData.voice,
+                rate: resData.rate || '+0%',
+                pitch: resData.pitch || '+0Hz',
+                prompt: p,
+              })
+            }
+            ui.bubble.show(`声音生成成功！匹配音色：${resData.voice} (${resData.rate || '+0%'}, ${resData.pitch || '+0Hz'})`, { duration: 3500 })
+            await playAudioWithLipSync(resData.audioUrl)
+          } else {
+            alert('生成失败: ' + ((resData && resData.error) || '未知错误'))
+          }
+        } catch (err) {
+          alert('生成异常: ' + ((err && err.message) || err))
+        } finally {
+          genPlayBtn.textContent = '▶ 生成并试听声音'
+          genPlayBtn.disabled = false
+        }
+      })
+
+      const saveVoiceBtn = $('button', 'dshp-btn', '💾 设为当前伴侣声音')
+      saveVoiceBtn.style.padding = '6px 10px'
+      saveVoiceBtn.addEventListener('click', async () => {
+        saveVoiceBtn.textContent = '保存中...'
+        saveVoiceBtn.disabled = true
+        try {
+          const rateVal = (Number(rateRange.value) >= 0 ? '+' : '') + rateRange.value + '%'
+          const pitchVal = (Number(pitchRange.value) >= 0 ? '+' : '') + pitchRange.value + 'Hz'
+          const voiceToSave = lastGeneratedVoice || (activeCharInfo().voice && (activeCharInfo().voice.voice_name || activeCharInfo().voice.voice)) || 'zh-CN-XiaoxiaoNeural'
+          await apiFetch(BASE + '/save-voice-config', {
+            method: 'POST',
+            body: JSON.stringify({
+              characterId: activeCharacterId,
+              prompt: promptInput.value.trim(),
+              rate: rateVal,
+              pitch: pitchVal,
+              voice: voiceToSave,
+            }),
+          })
+          if (activeCharInfo()) {
+            activeCharInfo().voice = Object.assign(activeCharInfo().voice || {}, {
+              voice_name: voiceToSave,
+              prompt: promptInput.value.trim(),
+              rate: rateVal,
+              pitch: pitchVal,
+            })
+          }
+          ui.bubble.show(`已将新音色设为「${activeCharInfo().name}」默认声音！`, { duration: 3000 })
+        } catch (e) {
+          alert('保存失败: ' + ((e && e.message) || e))
+        } finally {
+          saveVoiceBtn.textContent = '💾 设为当前伴侣声音'
+          saveVoiceBtn.disabled = false
+        }
+      })
+
+      genBtnRow.append(genPlayBtn, saveVoiceBtn)
+      genCard.append(genTitle, promptInput, presetRow, acousticRow, testInput, genBtnRow)
+
+      // 3. 📁 本地 TTS 导入与配置卡片
+      const localCard = $('div', 'dshp-panel-card')
+      localCard.style.padding = '10px 12px'
+      localCard.style.background = 'rgba(255, 255, 255, 0.03)'
+      localCard.style.borderRadius = '10px'
+      localCard.style.border = '1px solid rgba(255, 255, 255, 0.12)'
+      localCard.style.display = 'flex'
+      localCard.style.flexDirection = 'column'
+      localCard.style.gap = '8px'
+
+      const localTitle = $('div', null, '📁 本地 TTS 导入与模型配置')
+      localTitle.style.fontWeight = 'bold'
+      localTitle.style.fontSize = '12px'
+
+      const engineRow = $('div', 'dshp-row')
+      engineRow.style.display = 'flex'
+      engineRow.style.alignItems = 'center'
+      engineRow.style.gap = '6px'
+
+      const engineLabel = $('span', 'dshp-hint', 'TTS引擎:')
+      engineLabel.style.width = '60px'
+
+      const engineSel = document.createElement('select')
+      engineSel.style.flex = '1'
+      engineSel.style.fontSize = '11px'
+      engineSel.style.padding = '3px 4px'
+      engineSel.style.borderRadius = '4px'
+      engineSel.style.background = '#222'
+      engineSel.style.color = '#eee'
+      engineSel.style.border = '1px solid #444'
+
+      const ENGINES = [
+        ['edge-tts', 'Edge TTS (9880 极速推荐)'],
+        ['gpt-sovits', 'GPT-SoVITS (本地模型克隆)'],
+        ['cosyvoice', 'CosyVoice (本地声线复刻)'],
+        ['fishspeech', 'FishSpeech / 外部自定义引擎'],
+      ]
+      for (const [eId, eName] of ENGINES) {
+        const opt = document.createElement('option')
+        opt.value = eId
+        opt.textContent = eName
+        engineSel.appendChild(opt)
+      }
+      engineRow.append(engineLabel, engineSel)
+
+      // 本地音色池快速选择
+      const poolRow = $('div', 'dshp-row')
+      poolRow.style.display = 'flex'
+      poolRow.style.alignItems = 'center'
+      poolRow.style.gap = '6px'
+
+      const poolLabel = $('span', 'dshp-hint', '音色库:')
+      poolLabel.style.width = '60px'
+
+      const poolSel = document.createElement('select')
+      poolSel.style.flex = '1'
+      poolSel.style.fontSize = '11px'
+      poolSel.style.padding = '3px 4px'
+      poolSel.style.borderRadius = '4px'
+      poolSel.style.background = '#222'
+      poolSel.style.color = '#eee'
+      poolSel.style.border = '1px solid #444'
+
+      const optDefault = document.createElement('option')
+      optDefault.value = ''
+      optDefault.textContent = '(从本地音色池快速选择...)'
+      poolSel.appendChild(optDefault)
+
+      const refAudioInput = document.createElement('input')
+      refAudioInput.type = 'text'
+      refAudioInput.placeholder = '参考音频相对路径 (如 voice_engine/voices_pool/...)'
+      refAudioInput.value = (activeCharInfo().voice && activeCharInfo().voice.referenceAudio) || ''
+      refAudioInput.style.width = '100%'
+      refAudioInput.style.boxSizing = 'border-box'
+      refAudioInput.style.fontSize = '11px'
+      refAudioInput.style.padding = '4px 6px'
+      refAudioInput.style.borderRadius = '4px'
+      refAudioInput.style.background = '#1b1b1b'
+      refAudioInput.style.color = '#ccc'
+      refAudioInput.style.border = '1px solid #333'
+
+      const refTextInput = document.createElement('input')
+      refTextInput.type = 'text'
+      refTextInput.placeholder = '参考文本 (对应音频台词或情绪标注)'
+      refTextInput.value = (activeCharInfo().voice && activeCharInfo().voice.referenceText) || ''
+      refTextInput.style.width = '100%'
+      refTextInput.style.boxSizing = 'border-box'
+      refTextInput.style.fontSize = '11px'
+      refTextInput.style.padding = '4px 6px'
+      refTextInput.style.borderRadius = '4px'
+      refTextInput.style.background = '#1b1b1b'
+      refTextInput.style.color = '#ccc'
+      refTextInput.style.border = '1px solid #333'
+
+      // 异步加载本地音色库
+      apiFetch(BASE + '/voices').then((data) => {
+        if (data && data.localPool) {
+          for (const lp of data.localPool) {
+            const opt = document.createElement('option')
+            opt.value = lp.path
+            opt.textContent = lp.file
+            poolSel.appendChild(opt)
+          }
+        }
+      }).catch(() => {})
+
+      poolSel.addEventListener('change', () => {
+        if (poolSel.value) refAudioInput.value = poolSel.value
+      })
+
+      poolRow.append(poolLabel, poolSel)
+
+      const saveLocalBtn = $('button', 'dshp-btn', '💾 保存本地 TTS 模型配置')
+      saveLocalBtn.style.padding = '6px'
+      saveLocalBtn.style.fontSize = '11.5px'
+      saveLocalBtn.addEventListener('click', async () => {
+        saveLocalBtn.textContent = '保存中...'
+        saveLocalBtn.disabled = true
+        try {
+          await apiFetch(BASE + '/save-voice-config', {
+            method: 'POST',
+            body: JSON.stringify({
+              characterId: activeCharacterId,
+              engine: engineSel.value,
+              referenceAudio: refAudioInput.value.trim(),
+              referenceText: refTextInput.value.trim(),
+            }),
+          })
+          ui.bubble.show(`「${activeCharInfo().name}」本地 TTS 配置已保存！`, { duration: 3000 })
+        } catch (e) {
+          alert('保存失败: ' + ((e && e.message) || e))
+        } finally {
+          saveLocalBtn.textContent = '💾 保存本地 TTS 模型配置'
+          saveLocalBtn.disabled = false
+        }
+      })
+
+      localCard.append(localTitle, engineRow, poolRow, refAudioInput, refTextInput, saveLocalBtn)
+
+      box.append(statusTitle, basicRow, volLabel, genCard, localCard)
+      panes.appendChild(box)
+      return
+    }
+
+    if (id === 'wallet') {
+      const box = $('div', 'dshp-col')
+      box.style.display = 'flex'
+      box.style.flexDirection = 'column'
+      box.style.gap = '10px'
+      box.style.padding = '4px 2px'
+
+      // 实时获取最新数据并渲染
+      hudFetch(false).then(() => {
+        if (ui.menu.focused === 'wallet') refreshWalletContent()
+      })
+
+      const walletCard = $('div')
+      walletCard.style.background = 'linear-gradient(135deg, rgba(124, 92, 255, 0.12), rgba(0, 180, 216, 0.08))'
+      walletCard.style.border = '1px solid rgba(124, 92, 255, 0.3)'
+      walletCard.style.borderRadius = '10px'
+      walletCard.style.padding = '12px'
+      walletCard.style.display = 'flex'
+      walletCard.style.flexDirection = 'column'
+      walletCard.style.gap = '8px'
+
+      function refreshWalletContent() {
+        walletCard.textContent = ''
+        const d = hud.data || {}
+        const peak = d.isPeak === true
+        const t = hud.turn || {}
+
+        // 顶栏：峰谷标签与倒计时
+        const topRow = $('div')
+        topRow.style.display = 'flex'
+        topRow.style.justifyContent = 'space-between'
+        topRow.style.alignItems = 'center'
+
+        const badge = $('span', 'dshp-hud-tag ' + (peak ? 'dshp-peak' : 'dshp-valley'))
+        badge.textContent = d.isPeak === undefined || d.isPeak === null ? '—' : peak ? '⚡ 高峰期（标准资费）' : '🌙 低谷期（半价特惠）'
+        badge.style.fontWeight = 'bold'
+        badge.style.fontSize = '12px'
+
+        const cd = $('span', 'dshp-hint', d.peakNextChangeAt ? `倒计时：${humanLeft(d.peakNextChangeAt - Math.floor(Date.now() / 1000))}` : '')
+        cd.style.fontSize = '11px'
+        topRow.append(badge, cd)
+
+        // 中间：总余额展示
+        const balRow = $('div')
+        balRow.style.display = 'flex'
+        balRow.style.flexDirection = 'column'
+        balRow.style.gap = '2px'
+        balRow.style.margin = '4px 0'
+
+        const balLabel = $('div', 'dshp-hint', 'DeepSeek 钱包总余额')
+        balLabel.style.fontSize = '11px'
+        const balValue = $('div', null, d.ok === false && d.code === 'NO_KEY' ? '未配置 API KEY' : (d.totalBalance != null ? money(d.totalBalance, d.currency) : '¥ —'))
+        balValue.style.fontSize = '22px'
+        balValue.style.fontWeight = 'bold'
+        balValue.style.color = '#7c5cff'
+        balRow.append(balLabel, balValue)
+
+        // 统计卡片网格：今日消耗与本轮消耗
+        const statsGrid = $('div')
+        statsGrid.style.display = 'grid'
+        statsGrid.style.gridTemplateColumns = '1fr 1fr'
+        statsGrid.style.gap = '8px'
+
+        const todayBox = $('div')
+        todayBox.style.background = 'rgba(0, 0, 0, 0.2)'
+        todayBox.style.padding = '6px 8px'
+        todayBox.style.borderRadius = '6px'
+        const todayTitle = $('div', 'dshp-hint', '今日消耗')
+        todayTitle.style.fontSize = '10.5px'
+        const todayVal = $('div', null, d.todayUsage != null ? money(d.todayUsage, d.todayUsageCurrency || d.currency) : '—')
+        todayVal.style.fontWeight = 'bold'
+        todayVal.style.fontSize = '13px'
+        todayBox.append(todayTitle, todayVal)
+
+        const turnBox = $('div')
+        turnBox.style.background = 'rgba(0, 0, 0, 0.2)'
+        turnBox.style.padding = '6px 8px'
+        turnBox.style.borderRadius = '6px'
+        const turnTitle = $('div', 'dshp-hint', '本轮消耗')
+        turnTitle.style.fontSize = '10.5px'
+        const turnVal = $('div', null, t.tokens ? `${Number(t.tokens).toLocaleString()} tk` : (t.amount != null ? money(t.amount, d.currency) : '—'))
+        turnVal.style.fontWeight = 'bold'
+        turnVal.style.fontSize = '13px'
+        turnBox.append(turnTitle, turnVal)
+
+        statsGrid.append(todayBox, turnBox)
+
+        // 操作按钮行：刷新与桌面HUD切换
+        const btnRow = $('div', 'dshp-row')
+        btnRow.style.display = 'flex'
+        btnRow.style.gap = '6px'
+        btnRow.style.marginTop = '6px'
+
+        const refreshBtn = $('button', 'dshp-btn dshp-primary', '🔄 立即刷新')
+        refreshBtn.style.flex = '1'
+        refreshBtn.style.fontSize = '11.5px'
+        refreshBtn.style.padding = '5px 8px'
+        refreshBtn.addEventListener('click', async () => {
+          refreshBtn.textContent = '刷新中...'
+          refreshBtn.disabled = true
+          await hudFetch(true)
+          refreshWalletContent()
+        })
+
+        const hudToggleBtn = $('button', 'dshp-btn', hud.open ? '📌 关闭桌面浮标' : '📌 开启桌面浮标')
+        hudToggleBtn.style.flex = '1'
+        hudToggleBtn.style.fontSize = '11.5px'
+        hudToggleBtn.style.padding = '5px 8px'
+        hudToggleBtn.addEventListener('click', () => {
+          if (hud.open) closeHud()
+          else openHud({ flash: true })
+          hudToggleBtn.textContent = hud.open ? '📌 关闭桌面浮标' : '📌 开启桌面浮标'
+        })
+
+        btnRow.append(refreshBtn, hudToggleBtn)
+
+        const footNote = $('div', 'dshp-hint', (hud.source ? `数据来源：${hud.source === 'self' ? '桌宠直连' : 'DSH 服务'}` : '数据来源：接口') + (hud.fetchedAt ? ` · ${new Date(hud.fetchedAt).toLocaleTimeString('zh-CN', { hour12: false })}` : ''))
+        footNote.style.fontSize = '10px'
+        footNote.style.color = '#888'
+
+        walletCard.append(topRow, balRow, statsGrid, btnRow, footNote)
+      }
+
+      refreshWalletContent()
+      box.appendChild(walletCard)
+      panes.appendChild(box)
+      return
+    }
+
+    if (id === 'face') {
+      if (activeCharacterId === 'whale') {
+        const grid = $('div', 'dshp-grid')
+        const byExpr = new Map()
+        const BANNED_MOODS = new Set(['dizzy'])
+        for (const key of Object.keys(MOOD_FACE)) {
+          if (key === 'neutral') continue
+          const expr = MOOD_FACE[key]
+          if (!expr || BANNED_MOODS.has(key)) continue
+          if (!EXPR[expr] || expr === '呆呆眼' || expr === '晕晕') continue
+          if (!byExpr.has(expr)) byExpr.set(expr, [])
+          byExpr.get(expr).push(key)
+        }
+        const neutral = $('button', 'dshp-chip', '平常')
+        if (!rig.override && !rig.user.face) neutral.classList.add('dshp-on')
+        neutral.title = '立刻回到平常脸（她自己的表情也交还给她）'
+        neutral.addEventListener('click', () => {
+          clearUserFace()
+          clearReaction()
+          act({ mood: 'neutral', props: IDLE_PROPS, ms: 800 })
+          renderPane('face')
+        })
+        grid.appendChild(neutral)
+        for (const [expr, keys] of byExpr) {
+          const rep = keys.find((k) => FACE_ACT[k]) || keys[0]
+          const lines = (FACE_ACT[rep] && FACE_ACT[rep].lines) || []
+          const b = $('button', 'dshp-chip', expr)
+          if (rig.override && rig.override.face === expr) b.classList.add('dshp-on')
+          b.title = keys.join(' / ') + (lines.length ? `\n她会说：${lines[0]}` : '')
+          b.addEventListener('click', () => {
+            clearUserFace()
+            playItem('face', rep)
+            renderPane('face')
+          })
+          grid.appendChild(b)
+        }
+        panes.append(
+          grid,
+          $('div', 'dshp-hint', '点一下 = 换脸 + 说一句配好的话，三四秒后自己让位（平常状态永远是平常脸）。\n💡 提示：当前伴侣为「鲸鱼娘」（系统基准黄金模型，内置表情与道具固定）。如需自定义配置其他模型的表情动作映射，请在「角色」菜单切换为兔兔、玉玉或新导入的角色。'),
+        )
+        return
+      }
+
+      // --- 非鲸鱼娘模型：表情与动作映射面板 (参考桌面灵 GUI 结构) ---
+      let currentMappingSubView = 'mapping'
+      async function renderMappingPane() {
+        const char = activeCharInfo()
+        const box = $('div', 'dshp-col')
+        box.style.display = 'flex'
+        box.style.flexDirection = 'column'
+        box.style.gap = '10px'
+
+        if (!currentCharacterAssets || currentCharacterAssets.characterId !== activeCharacterId || (!currentCharacterAssets.expressions.length && !currentCharacterAssets.motions.length)) {
+          const loadingHint = $('div', 'dshp-hint', '正在识别并载入模型表情与动作资产，请稍候...')
+          box.appendChild(loadingHint)
+          panes.appendChild(box)
+          await loadCharacterAssets(activeCharacterId)
+          if (ui.menu.focused !== 'face') return
+          box.textContent = ''
+        }
+
+        // 顶部角色提示与状态条
+        const topRow = $('div', 'dshp-row')
+        topRow.style.display = 'flex'
+        topRow.style.justifyContent = 'space-between'
+        topRow.style.alignItems = 'center'
+
+        const title = $('div', 'dshp-hint', `当前伴侣：${char.name}（${char.title}）`)
+        title.style.fontWeight = 'bold'
+        title.style.color = '#7c5cff'
+        title.style.fontSize = '13px'
+
+        const modeToggle = $('div', 'dshp-row')
+        modeToggle.style.gap = '6px'
+        const btnTabMapping = $('button', 'dshp-btn dshp-primary', '⚙ 表情动作映射')
+        const btnTabPlay = $('button', 'dshp-btn', '🎭 实时表情点播')
+        btnTabMapping.style.fontSize = '11px'
+        btnTabPlay.style.fontSize = '11px'
+        btnTabMapping.style.padding = '4px 8px'
+        btnTabPlay.style.padding = '4px 8px'
+
+        modeToggle.append(btnTabMapping, btnTabPlay)
+        topRow.append(title, modeToggle)
+        box.appendChild(topRow)
+
+        const contentArea = $('div')
+        box.appendChild(contentArea)
+        if (!panes.contains(box)) panes.appendChild(box)
+
+        let currentSubView = currentMappingSubView || 'mapping'
+
+        function showSubView(v) {
+          currentSubView = v
+          currentMappingSubView = v
+          contentArea.textContent = ''
+          if (v === 'mapping') {
+            btnTabMapping.classList.add('dshp-primary')
+            btnTabPlay.classList.remove('dshp-primary')
+            renderMappingView()
+          } else {
+            btnTabPlay.classList.add('dshp-primary')
+            btnTabMapping.classList.remove('dshp-primary')
+            renderPlayView()
+          }
+        }
+
+        btnTabMapping.addEventListener('click', () => showSubView('mapping'))
+        btnTabPlay.addEventListener('click', () => showSubView('play'))
+
+        function renderMappingView() {
+          const wrap = $('div')
+          wrap.style.display = 'flex'
+          wrap.style.flexDirection = 'column'
+          wrap.style.gap = '10px'
+
+          const bar = $('div', 'dshp-row')
+          bar.style.display = 'flex'
+          bar.style.gap = '8px'
+          bar.style.alignItems = 'center'
+          bar.style.flexWrap = 'wrap'
+
+          const smartBtn = $('button', 'dshp-btn', '✨ 一键智能自动匹配')
+          smartBtn.style.fontSize = '11.5px'
+          smartBtn.style.padding = '5px 10px'
+
+          const saveBtn = $('button', 'dshp-btn dshp-primary', '💾 保存映射配置')
+          saveBtn.style.fontSize = '11.5px'
+          saveBtn.style.padding = '5px 12px'
+          saveBtn.style.background = '#7c5cff'
+          saveBtn.style.color = '#fff'
+          saveBtn.style.fontWeight = 'bold'
+
+          const statusNote = $('div', 'dshp-hint', `已检测到 ${currentCharacterAssets.expressions.length} 个表情 · ${currentCharacterAssets.motions.length} 个动作`)
+          statusNote.style.fontSize = '11px'
+          statusNote.style.color = '#888'
+
+          bar.append(smartBtn, saveBtn, statusNote)
+          wrap.appendChild(bar)
+
+          const expSelects = {}
+          const motSelects = {}
+
+          // 分组 1：基础情绪映射
+          const secMood = $('div')
+          secMood.style.border = '1px solid rgba(124, 92, 255, 0.25)'
+          secMood.style.borderRadius = '8px'
+          secMood.style.padding = '10px'
+          secMood.style.background = 'rgba(255, 255, 255, 0.03)'
+
+          const secMoodTitle = $('div', 'dshp-hint', '▼ 基础情绪映射（对接 AI 聊天与伴侣情感表达）')
+          secMoodTitle.style.fontWeight = 'bold'
+          secMoodTitle.style.marginBottom = '8px'
+          secMoodTitle.style.color = '#9a82ff'
+          secMood.appendChild(secMoodTitle)
+
+          const moodGrid = $('div')
+          moodGrid.style.display = 'grid'
+          moodGrid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(230px, 1fr))'
+          moodGrid.style.gap = '6px'
+          moodGrid.style.width = '100%'
+          moodGrid.style.boxSizing = 'border-box'
+
+          for (const slot of STANDARD_EMOTION_SLOTS) {
+            const row = $('div', 'dshp-map-row')
+            row.style.display = 'flex'
+            row.style.alignItems = 'center'
+            row.style.gap = '6px'
+            row.style.width = '100%'
+            row.style.boxSizing = 'border-box'
+            row.style.background = 'rgba(0, 0, 0, 0.15)'
+            row.style.padding = '4px 6px'
+            row.style.borderRadius = '6px'
+            row.style.overflow = 'hidden'
+
+            const label = $('span', null, `${slot.icon} ${slot.label}`)
+            label.style.width = '84px'
+            label.style.minWidth = '80px'
+            label.style.maxWidth = '90px'
+            label.style.fontSize = '11.5px'
+            label.style.flexShrink = '0'
+            label.style.overflow = 'hidden'
+            label.style.textOverflow = 'ellipsis'
+            label.style.whiteSpace = 'nowrap'
+            label.title = `${slot.label}: ${slot.desc}`
+
+            const sel = document.createElement('select')
+            sel.style.flex = '1 1 0%'
+            sel.style.minWidth = '0'
+            sel.style.width = '0'
+            sel.style.maxWidth = '100%'
+            sel.style.overflow = 'hidden'
+            sel.style.textOverflow = 'ellipsis'
+            sel.style.whiteSpace = 'nowrap'
+            sel.style.fontSize = '11px'
+            sel.style.padding = '3px 4px'
+            sel.style.borderRadius = '4px'
+            sel.style.background = 'var(--dshp-bg, #222)'
+            sel.style.color = 'var(--dshp-fg, #eee)'
+            sel.style.border = '1px solid var(--dshp-line, #444)'
+
+            const optNone = document.createElement('option')
+            optNone.value = ''
+            optNone.textContent = '(未映射 / 不启用)'
+            sel.appendChild(optNone)
+
+            const curVal = (char.expressions && char.expressions[slot.id]) || ''
+
+            for (const e of currentCharacterAssets.expressions) {
+              const opt = document.createElement('option')
+              opt.value = e.file
+              opt.textContent = `${e.name} (${e.file})`
+              if (curVal === e.file || curVal === e.name) opt.selected = true
+              sel.appendChild(opt)
+            }
+
+            expSelects[slot.id] = sel
+
+            const btnTest = $('button', 'dshp-btn', '▶ 试看')
+            btnTest.style.padding = '2px 8px'
+            btnTest.style.fontSize = '11px'
+            btnTest.style.flexShrink = '0'
+            btnTest.style.whiteSpace = 'nowrap'
+            btnTest.title = '在模型上实时试看这个表情（3.5秒）'
+            btnTest.addEventListener('click', () => {
+              const v = sel.value
+              if (!v) {
+                ui.bubble.show('请先选择表情文件！', { duration: 1500 })
+                return
+              }
+              btnTest.textContent = '👀 播放中'
+              btnTest.disabled = true
+              previewExpression(v)
+              setTimeout(() => {
+                btnTest.textContent = '▶ 试看'
+                btnTest.disabled = false
+              }, 3500)
+            })
+
+            row.append(label, sel, btnTest)
+            moodGrid.appendChild(row)
+          }
+          secMood.appendChild(moodGrid)
+          wrap.appendChild(secMood)
+
+          // 分组 2：交互与动作映射
+          const secMot = $('div')
+          secMot.style.border = '1px solid rgba(124, 92, 255, 0.25)'
+          secMot.style.borderRadius = '8px'
+          secMot.style.padding = '10px'
+          secMot.style.background = 'rgba(255, 255, 255, 0.03)'
+
+          const secMotTitle = $('div', 'dshp-hint', '▼ 交互与动作映射（待机循环与点击动作）')
+          secMotTitle.style.fontWeight = 'bold'
+          secMotTitle.style.marginBottom = '8px'
+          secMotTitle.style.color = '#9a82ff'
+          secMot.appendChild(secMotTitle)
+
+          const motGrid = $('div')
+          motGrid.style.display = 'grid'
+          motGrid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(230px, 1fr))'
+          motGrid.style.gap = '6px'
+          motGrid.style.width = '100%'
+          motGrid.style.boxSizing = 'border-box'
+
+          for (const slot of STANDARD_ACTION_SLOTS) {
+            const row = $('div', 'dshp-map-row')
+            row.style.display = 'flex'
+            row.style.alignItems = 'center'
+            row.style.gap = '6px'
+            row.style.width = '100%'
+            row.style.boxSizing = 'border-box'
+            row.style.background = 'rgba(0, 0, 0, 0.15)'
+            row.style.padding = '4px 6px'
+            row.style.borderRadius = '6px'
+            row.style.overflow = 'hidden'
+
+            const label = $('span', null, `${slot.icon} ${slot.label}`)
+            label.style.width = '84px'
+            label.style.minWidth = '80px'
+            label.style.maxWidth = '90px'
+            label.style.fontSize = '11.5px'
+            label.style.flexShrink = '0'
+            label.style.overflow = 'hidden'
+            label.style.textOverflow = 'ellipsis'
+            label.style.whiteSpace = 'nowrap'
+            label.title = slot.desc
+
+            const sel = document.createElement('select')
+            sel.style.flex = '1 1 0%'
+            sel.style.minWidth = '0'
+            sel.style.width = '0'
+            sel.style.maxWidth = '100%'
+            sel.style.overflow = 'hidden'
+            sel.style.textOverflow = 'ellipsis'
+            sel.style.whiteSpace = 'nowrap'
+            sel.style.fontSize = '11px'
+            sel.style.padding = '3px 4px'
+            sel.style.borderRadius = '4px'
+            sel.style.background = 'var(--dshp-bg, #222)'
+            sel.style.color = 'var(--dshp-fg, #eee)'
+            sel.style.border = '1px solid var(--dshp-line, #444)'
+
+            const optNone = document.createElement('option')
+            optNone.value = ''
+            optNone.textContent = '(未映射 / 不启用)'
+            sel.appendChild(optNone)
+
+            const curVal = (char.motions && char.motions[slot.id]) || ''
+
+            for (const m of currentCharacterAssets.motions) {
+              const opt = document.createElement('option')
+              opt.value = m.file
+              opt.textContent = `${m.name} (${m.file})`
+              if (curVal === m.file || curVal === m.name) opt.selected = true
+              sel.appendChild(opt)
+            }
+
+            motSelects[slot.id] = sel
+
+            const btnPlay = $('button', 'dshp-btn', '▶ 播放')
+            btnPlay.style.padding = '2px 8px'
+            btnPlay.style.fontSize = '11px'
+            btnPlay.style.flexShrink = '0'
+            btnPlay.style.whiteSpace = 'nowrap'
+            btnPlay.title = '在模型上播放该动作'
+            btnPlay.addEventListener('click', () => {
+              const v = sel.value
+              if (!v) {
+                ui.bubble.show('请先选择动作文件！', { duration: 1500 })
+                return
+              }
+              btnPlay.textContent = '🎬 播放中'
+              btnPlay.disabled = true
+              previewMotion(v)
+              setTimeout(() => {
+                btnPlay.textContent = '▶ 播放'
+                btnPlay.disabled = false
+              }, 3000)
+            })
+
+            row.append(label, sel, btnPlay)
+            motGrid.appendChild(row)
+          }
+          secMot.appendChild(motGrid)
+          wrap.appendChild(secMot)
+
+          // 一键智能匹配
+          smartBtn.addEventListener('click', () => {
+            let matchCount = 0
+            for (const slot of STANDARD_EMOTION_SLOTS) {
+              const sel = expSelects[slot.id]
+              if (!sel) continue
+              for (const e of currentCharacterAssets.expressions) {
+                const lower = (e.name + ' ' + e.file).toLowerCase()
+                if (slot.keywords.some((kw) => lower.includes(kw.toLowerCase()))) {
+                  sel.value = e.file
+                  matchCount++
+                  break
+                }
+              }
+            }
+            for (const slot of STANDARD_ACTION_SLOTS) {
+              const sel = motSelects[slot.id]
+              if (!sel) continue
+              for (const m of currentCharacterAssets.motions) {
+                const lower = (m.name + ' ' + m.file).toLowerCase()
+                if (slot.keywords.some((kw) => lower.includes(kw.toLowerCase()))) {
+                  sel.value = m.file
+                  matchCount++
+                  break
+                }
+              }
+            }
+            ui.bubble.show(`智能匹配完成！已为您自动匹配 ${matchCount} 项，满意后请点击保存。`, { duration: 3500 })
+          })
+
+          // 保存配置
+          saveBtn.addEventListener('click', async () => {
+            saveBtn.textContent = '正在保存...'
+            saveBtn.disabled = true
+            const exps = {}
+            const mots = {}
+            for (const [sId, sel] of Object.entries(expSelects)) {
+              if (sel.value) exps[sId] = sel.value
+            }
+            for (const [sId, sel] of Object.entries(motSelects)) {
+              if (sel.value) mots[sId] = sel.value
+            }
+            // 优先写入 localStorage，确保即使离线或未重启也必定即时生效
+            try {
+              localStorage.setItem('dsh_pet_mapping_' + activeCharacterId, JSON.stringify({ expressions: exps, motions: mots }))
+            } catch (e) {}
+
+            char.expressions = exps
+            char.motions = mots
+            for (const [slot, expFile] of Object.entries(exps)) {
+              if (expFile && EXPR[expFile]) MOOD_FACE[slot] = expFile
+            }
+            if (MOOD_FACE.happy) MOOD_FACE.joy = MOOD_FACE.happy
+            if (MOOD_FACE.angry) MOOD_FACE.grumpy = MOOD_FACE.angry
+            if (MOOD_FACE.shy) MOOD_FACE.blush = MOOD_FACE.shy
+
+            try {
+              const resData = await apiFetch(BASE + '/save-character-mapping', {
+                method: 'POST',
+                body: JSON.stringify({
+                  characterId: activeCharacterId,
+                  expressions: exps,
+                  motions: mots,
+                }),
+              })
+              ui.bubble.show(`${char.name} 的表情与动作映射配置已保存并即时生效！`, { duration: 3000 })
+            } catch (err) {
+              ui.bubble.show(`${char.name} 的映射已保存至本地，即刻生效！`, { duration: 3000 })
+            } finally {
+              saveBtn.textContent = '💾 保存映射配置'
+              saveBtn.disabled = false
+            }
+          })
+
+          contentArea.appendChild(wrap)
+        }
+
+        function renderPlayView() {
+          const wrap = $('div')
+          wrap.style.display = 'flex'
+          wrap.style.flexDirection = 'column'
+          wrap.style.gap = '10px'
+
+          const grid = $('div', 'dshp-grid')
+          grid.style.display = 'flex'
+          grid.style.flexWrap = 'wrap'
+          grid.style.gap = '6px'
+
+          const neutralBtn = $('button', 'dshp-chip', '平常 (neutral)')
+          if (!rig.override && !rig.user.face) neutralBtn.classList.add('dshp-on')
+          neutralBtn.addEventListener('click', () => {
+            clearUserFace()
+            clearReaction()
+            act({ mood: 'neutral', props: IDLE_PROPS, ms: 800 })
+            renderPane('face')
+          })
+          grid.appendChild(neutralBtn)
+
+          const exps = char.expressions || {}
+          let hasAny = false
+
+          for (const slot of STANDARD_EMOTION_SLOTS) {
+            const expFile = exps[slot.id]
+            if (!expFile || !EXPR[expFile]) continue
+            hasAny = true
+            const btn = $('button', 'dshp-chip', `${slot.icon} ${slot.label}`)
+            if (rig.override && rig.override.face === expFile) btn.classList.add('dshp-on')
+            btn.addEventListener('click', () => {
+              clearUserFace()
+              act({ mood: slot.id, face: expFile, ms: 3500 })
+              renderPane('face')
+            })
+            grid.appendChild(btn)
+          }
+
+          if (!hasAny) {
+            const tip = $('div', 'dshp-hint', '当前角色暂无已映射的表情，请在「⚙ 表情动作映射」子页中配置或点击一键智能匹配！')
+            tip.style.padding = '10px'
+            tip.style.color = '#ffaa44'
+            wrap.appendChild(tip)
+          }
+
+          wrap.append(grid, $('div', 'dshp-hint', '点击表情按钮：角色立刻演绎该表情 3.5 秒并恢复平常状态。'))
+
+          // 角色全部原生表情资产快速点播
+          const unmappedExps = currentCharacterAssets.expressions.filter(
+            (e) => !Object.values(exps).includes(e.file) && !Object.values(exps).includes(e.name)
+          )
+          if (unmappedExps.length > 0) {
+            const extraHeader = $('div', 'dshp-hint', '▼ 角色原生表情资产（全部可用）')
+            extraHeader.style.marginTop = '8px'
+            extraHeader.style.fontWeight = 'bold'
+            extraHeader.style.color = '#9a82ff'
+            wrap.appendChild(extraHeader)
+
+            const extraGrid = $('div', 'dshp-grid')
+            extraGrid.style.display = 'flex'
+            extraGrid.style.flexWrap = 'wrap'
+            extraGrid.style.gap = '6px'
+
+            for (const e of unmappedExps) {
+              const b = $('button', 'dshp-chip', e.name)
+              b.title = `原生文件: ${e.file}\n点击演绎表情（3.5秒）`
+              if (rig.override && rig.override.face === e.file) b.classList.add('dshp-on')
+              b.addEventListener('click', () => {
+                clearUserFace()
+                act({ mood: 'excited', face: e.file, ms: 3500 })
+                renderPane('face')
+              })
+              extraGrid.appendChild(b)
+            }
+            wrap.appendChild(extraGrid)
+          }
+
+          contentArea.appendChild(wrap)
+        }
+
+        showSubView(currentSubView)
+      }
+
+      renderMappingPane()
+      return
+    }
+
+    // --- 非鲸鱼娘角色的专属装扮与随身道具面板 (动态捕捉与分类扩展) ---
+    function renderCustomCharacterPropsPane(cat) {
+      const char = activeCharInfo()
+      const classified = classifyCharacterAssets(currentCharacterAssets)
+      const list = cat === 'decor' ? classified.decor : classified.scene
+
+      const box = $('div', 'dshp-col')
+      box.style.display = 'flex'
+      box.style.flexDirection = 'column'
+      box.style.gap = '8px'
+
+      // 顶部条：标题 + 调整归类按钮
+      const topBar = $('div', 'dshp-row')
+      topBar.style.display = 'flex'
+      topBar.style.justifyContent = 'space-between'
+      topBar.style.alignItems = 'center'
+
+      const topTitle = $('div', 'dshp-hint', `「${char.name}」专属${cat === 'decor' ? '装扮与服饰' : '随身道具与场景'}`)
+      topTitle.style.fontWeight = 'bold'
+      topTitle.style.color = '#7c5cff'
+
+      const catMgrBtn = $('button', 'dshp-btn', '🏷️ 分类管理')
+      catMgrBtn.style.fontSize = '10.5px'
+      catMgrBtn.style.padding = '2px 6px'
+      catMgrBtn.title = '为新导入或当前角色的资产自由调整归类（装饰/场景/动作/表情）'
+
+      topBar.append(topTitle, catMgrBtn)
+      box.appendChild(topBar)
+
+      // 分类管理器折叠面板
+      let mgrOpen = false
+      const mgrPanel = $('div')
+      mgrPanel.style.display = 'none'
+      mgrPanel.style.padding = '8px'
+      mgrPanel.style.borderRadius = '8px'
+      mgrPanel.style.background = 'rgba(0, 0, 0, 0.3)'
+      mgrPanel.style.border = '1px solid rgba(124, 92, 255, 0.25)'
+      mgrPanel.style.flexDirection = 'column'
+      mgrPanel.style.gap = '6px'
+
+      catMgrBtn.addEventListener('click', () => {
+        mgrOpen = !mgrOpen
+        mgrPanel.style.display = mgrOpen ? 'flex' : 'none'
+        catMgrBtn.textContent = mgrOpen ? '收起管理' : '🏷️ 分类管理'
+      })
+
+      const mgrTitle = $('div', 'dshp-hint', '💡 智能与可扩展资产归类：修改归类即时生效并保存到角色配置中')
+      mgrTitle.style.fontSize = '11px'
+      mgrPanel.appendChild(mgrTitle)
+
+      const allItems = (currentCharacterAssets.expressions || []).concat(currentCharacterAssets.motions || [])
+      const mgrGrid = $('div')
+      mgrGrid.style.display = 'flex'
+      mgrGrid.style.flexDirection = 'column'
+      mgrGrid.style.gap = '4px'
+      mgrGrid.style.maxHeight = '140px'
+      mgrGrid.style.overflowY = 'auto'
+
+      for (const item of allItems) {
+        const row = $('div')
+        row.style.display = 'flex'
+        row.style.justifyContent = 'space-between'
+        row.style.alignItems = 'center'
+        row.style.padding = '2px 4px'
+        row.style.background = 'rgba(255, 255, 255, 0.03)'
+        row.style.borderRadius = '4px'
+
+        const nameSpan = $('span', null, item.name + (item.file ? ` (${item.file})` : ''))
+        nameSpan.style.fontSize = '11px'
+        nameSpan.style.overflow = 'hidden'
+        nameSpan.style.textOverflow = 'ellipsis'
+        nameSpan.style.whiteSpace = 'nowrap'
+        nameSpan.style.maxWidth = '150px'
+
+        const cSel = document.createElement('select')
+        cSel.style.fontSize = '10.5px'
+        cSel.style.padding = '2px 4px'
+        cSel.style.background = '#222'
+        cSel.style.color = '#eee'
+        cSel.style.borderRadius = '3px'
+        cSel.style.border = '1px solid #444'
+
+        const CATS = [
+          ['decor', '🎀 装饰'],
+          ['scene', '🍵 场景'],
+          ['action', '⚡ 动作'],
+          ['emotion', '😊 表情'],
+        ]
+        const curCat = item.category || (classified.decor.includes(item) ? 'decor' : classified.scene.includes(item) ? 'scene' : classified.action.includes(item) ? 'action' : 'emotion')
+        for (const [cVal, cText] of CATS) {
+          const opt = document.createElement('option')
+          opt.value = cVal
+          opt.textContent = cText
+          if (curCat === cVal) opt.selected = true
+          cSel.appendChild(opt)
+        }
+
+        cSel.addEventListener('change', async () => {
+          item.category = cSel.value
+          const newCats = { decor: [], scene: [], action: [], emotion: [] }
+          for (const it of allItems) {
+            const targetCat = it.category || 'emotion'
+            if (newCats[targetCat]) newCats[targetCat].push(it.file)
+          }
+          try {
+            await apiFetch(BASE + '/save-character-categories', {
+              method: 'POST',
+              body: JSON.stringify({ characterId: activeCharacterId, categories: newCats }),
+            })
+            currentCharacterAssets.categories = newCats
+            ui.bubble.show(`「${item.name}」已调整为「${cSel.options[cSel.selectedIndex].text}」！`, { duration: 2000 })
+            renderPane(cat)
+          } catch (err) {}
+        })
+
+        row.append(nameSpan, cSel)
+        mgrGrid.appendChild(row)
+      }
+      mgrPanel.appendChild(mgrGrid)
+      box.appendChild(mgrPanel)
+
+      // 资产按钮网格
+      const grid = $('div', 'dshp-grid')
+      grid.style.display = 'flex'
+      grid.style.flexWrap = 'wrap'
+      grid.style.gap = '6px'
+
+      if (list.length === 0) {
+        const emptyHint = $('div', 'dshp-hint', `当前伴侣「${char.name}」暂无识别为「${cat === 'decor' ? '装饰' : '场景'}」的资产。\n可点击上方「🏷️ 分类管理」将任意道具或模型参数分配至此菜单。`)
+        emptyHint.style.padding = '8px 4px'
+        emptyHint.style.color = '#ffaa44'
+        grid.appendChild(emptyHint)
+      } else {
+        for (const item of list) {
+          const on = rig.userProps.has(item.file) || rig.userProps.has(item.name)
+          const b = $('button', 'dshp-chip', (cat === 'decor' ? '🎀 ' : '🍵 ') + item.name)
+          if (on) b.classList.add('dshp-on')
+          b.title = `参数/文件: ${item.file}\n点击开启/关闭（状态常驻保持）`
+          b.addEventListener('click', () => {
+            const nowOn = rig.userProps.has(item.file) || rig.userProps.has(item.name)
+            if (nowOn) {
+              rig.userProps.delete(item.file)
+              rig.userProps.delete(item.name)
+              if (activeCharacterId === 'tutu' && coreModel) {
+                try {
+                  coreModel.setParameterValueById('Param122', 0.0)
+                  coreModel.setParameterValueById('Param123', 1.0)
+                } catch (err) {}
+              }
+            } else {
+              rig.userProps.add(item.file)
+            }
+            resolveRig()
+            saveLayout({ props: Array.from(rig.userProps) })
+            renderPane(cat)
+          })
+          grid.appendChild(b)
+        }
+      }
+
       const row = $('div', 'dshp-row')
       const clear = $('button', 'dshp-btn', '全部摘掉')
       clear.addEventListener('click', () => {
         clearProps()
-        act({ mood: 'neutral', props: IDLE_PROPS, line: pickFresh(SAY.tidy, 'tidy'), ms: 2000 })
-        renderPane(id)
+        act({ mood: 'neutral', ms: 1200 })
+        renderPane(cat)
       })
       row.appendChild(clear)
-      panes.append(
+
+      box.append(
         grid,
         row,
-        $(
-          'div',
-          'dshp-hint',
-          id === 'decor'
-            ? '装饰品戴上就一直留着，直到你再点一下摘掉（同类自动互斥：眼镜只戴一副、贴纸只贴一张）。'
-            : '场景摆设也是「摆着不走」——桌布、鲸鱼、巴菲这些会一直留着，再点一下才收。',
-        ),
+        $('div', 'dshp-hint', cat === 'decor'
+          ? `「${char.name}」专属装饰穿戴：点击穿戴/摘掉，状态会自动常驻保存。`
+          : `「${char.name}」专属随身道具与场景摆设：点击拿取/收起，常驻生效。`)
       )
-      return
+      panes.appendChild(box)
     }
-    if (id === 'action') {
+
+    // --- 非鲸鱼娘角色的专属动作面板 ---
+    function renderCustomCharacterActionsPane() {
+      const char = activeCharInfo()
+      const classified = classifyCharacterAssets(currentCharacterAssets)
+
+      const box = $('div', 'dshp-col')
+      box.style.display = 'flex'
+      box.style.flexDirection = 'column'
+      box.style.gap = '8px'
+
+      const topBar = $('div', 'dshp-row')
+      topBar.style.display = 'flex'
+      topBar.style.justifyContent = 'space-between'
+      topBar.style.alignItems = 'center'
+
+      const topTitle = $('div', 'dshp-hint', `「${char.name}」专属动作与动画捕捉`)
+      topTitle.style.fontWeight = 'bold'
+      topTitle.style.color = '#7c5cff'
+
+      topBar.appendChild(topTitle)
+      box.appendChild(topBar)
+
       const grid = $('div', 'dshp-grid')
-      for (const key of ACTION_KEYS) {
-        const a = ACTIONS[key]
-        if (a.expr && !EXPR[a.expr]) continue
-        if (a.motion && !(manifest && manifest.motions && manifest.motions[a.motion])) continue
-        const b = $('button', 'dshp-chip', a.label)
-        b.title = `点了她会说：${a.lines[0]}` + (a.key ? `\n（原作者热键：${a.key}）` : '')
+      grid.style.display = 'flex'
+      grid.style.flexWrap = 'wrap'
+      grid.style.gap = '6px'
+
+      // 1. 动作动画 (.motion3.json)
+      for (const m of (currentCharacterAssets.motions || [])) {
+        const b = $('button', 'dshp-chip', '🎬 ' + m.name)
+        b.title = `动作文件: ${m.file} (${m.duration ? m.duration + '秒' : '动画'})\n点击在伴侣模型上播放`
         b.addEventListener('click', () => {
-          playAction(key)
-          renderPane('action')
+          b.classList.add('dshp-on')
+          previewMotion(m.file)
+          setTimeout(() => {
+            b.classList.remove('dshp-on')
+            resumeCharacterIdleMotion()
+          }, (m.duration ? m.duration * 1000 : 2500))
         })
         grid.appendChild(b)
       }
-      panes.append(
+
+      // 2. 交互动作姿态 (action gestures)
+      for (const e of classified.action) {
+        if (e.file && e.file.endsWith('.motion3.json')) continue
+        const b = $('button', 'dshp-chip', '⚡ ' + e.name)
+        b.title = `姿态文件: ${e.file}\n点击演绎动作姿态（3.5秒）`
+        b.addEventListener('click', () => {
+          b.classList.add('dshp-on')
+          previewExpression(e.file)
+          setTimeout(() => {
+            b.classList.remove('dshp-on')
+            if (activeCharacterId === 'tutu' && coreModel) {
+              try {
+                coreModel.setParameterValueById('Param122', 0.0)
+                coreModel.setParameterValueById('Param123', 1.0)
+              } catch (err) {}
+            }
+            resumeCharacterIdleMotion()
+          }, 3500)
+        })
+        grid.appendChild(b)
+      }
+
+      box.append(
         grid,
-        $('div', 'dshp-hint', '动作是**一次性的**：演一遍就自己消失，不会一直挂着。\n（要一直留着的，去「装饰」和「场景」两页——蛋包饭也在这页，挤完酱就没了。）'),
+        $('div', 'dshp-hint', `「${char.name}」专属动作是一次性的：演绎完毕后自动优雅恢复平常待机状态。`)
       )
+      panes.appendChild(box)
+    }
+
+    if (id === 'decor' || id === 'scene') {
+      if (activeCharacterId === 'whale') {
+        const src = id === 'decor' ? PROPS : SCENES
+        const grid = $('div', 'dshp-grid')
+        for (const [key, def] of Object.entries(src)) {
+          if (!EXPR[def.expr]) continue
+          const on = itemOn(key, def)
+          const b = $('button', 'dshp-chip', def.label)
+          if (on) b.classList.add('dshp-on')
+          const lines = (SCENE_ACT[key] && SCENE_ACT[key].lines) || (PROP_ACT[key] && PROP_ACT[key].lines) || []
+          const tip = on ? '再点一下收起来' : lines.length ? `点了她会说：${lines[0]}` : ''
+          b.title = def.key ? `${tip}\n（原作者热键：${def.key}）` : tip
+          b.addEventListener('click', () => {
+            const nowOn = itemOn(key, def)
+            setProp(key, !nowOn)
+            if (!nowOn) playItem(id, key)
+            renderPane(id)
+          })
+          grid.appendChild(b)
+        }
+        const row = $('div', 'dshp-row')
+        const clear = $('button', 'dshp-btn', '全部摘掉')
+        clear.addEventListener('click', () => {
+          clearProps()
+          act({ mood: 'neutral', props: IDLE_PROPS, line: pickFresh(SAY.tidy, 'tidy'), ms: 2000 })
+          renderPane(id)
+        })
+        row.appendChild(clear)
+        panes.append(
+          grid,
+          row,
+          $(
+            'div',
+            'dshp-hint',
+            id === 'decor'
+              ? '装饰品戴上就一直留着，直到你再点一下摘掉（同类自动互斥：眼镜只戴一副、贴纸只贴一张）。'
+              : '场景摆设也是「摆着不走」——桌布、鲸鱼、巴菲这些会一直留着，再点一下才收。',
+          ),
+        )
+        return
+      }
+
+      // --- 非鲸鱼娘模型：动态捕捉自身装扮与随身道具资产 ---
+      renderCustomCharacterPropsPane(id)
+      return
+    }
+
+    if (id === 'action') {
+      if (activeCharacterId === 'whale') {
+        const grid = $('div', 'dshp-grid')
+        for (const key of ACTION_KEYS) {
+          const a = ACTIONS[key]
+          if (a.expr && !EXPR[a.expr]) continue
+          if (a.motion && !(manifest && manifest.motions && manifest.motions[a.motion])) continue
+          const b = $('button', 'dshp-chip', a.label)
+          b.title = `点了她会说：${a.lines[0]}` + (a.key ? `\n（原作者热键：${a.key}）` : '')
+          b.addEventListener('click', () => {
+            playAction(key)
+            renderPane('action')
+          })
+          grid.appendChild(b)
+        }
+        panes.append(
+          grid,
+          $('div', 'dshp-hint', '动作是一次性的：演一遍就自己消失，不会一直挂着。\n（要一直留着的，去「装饰」和「场景」两页——蛋包饭也在这页，挤完酱就没了。）'),
+        )
+        return
+      }
+
+      // --- 非鲸鱼娘模型：动态捕捉自身动作与动画资产 ---
+      renderCustomCharacterActionsPane()
       return
     }
     // setting
@@ -4196,6 +6339,28 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       mouthBtn.textContent = CFG.talkMouth ? '说话口型：开' : '说话口型：关'
     })
     row1.append(eyeBtn, mouthBtn)
+
+    const voiceQuickRow = $('div', 'dshp-row')
+    voiceQuickRow.style.margin = '8px 0'
+    const testVoiceQuickBtn = $('button', 'dshp-btn dshp-primary', '▶ 测试伴侣发声 (9880)')
+    testVoiceQuickBtn.addEventListener('click', async () => {
+      try {
+        const data = await apiFetch(BASE + '/test-speech', {
+          method: 'POST',
+          body: JSON.stringify({ characterId: activeCharacterId }),
+        })
+        if (data.ok) {
+          if (data.text) ui.bubble.show(data.text, { name: activeCharInfo().name, sticky: false, duration: 5000 })
+          // 服务端 /test-speech 会广播 voice-speech 事件驱动播放，若未建立长连接则由此处兜底播放
+          if ((!es || es.readyState !== EventSource.OPEN) && data.audioUrl) {
+            await playAudioWithLipSync(data.audioUrl)
+          }
+        }
+      } catch (e) {}
+    })
+    voiceQuickRow.appendChild(testVoiceQuickBtn)
+    box.appendChild(voiceQuickRow)
+
 
     // 连接哪一个 DSH：自动 / 桌面版 / 网页版
     // （主人反馈：她有时连网页版、有时连桌面版，会「串对话」，所以要一个手动选择键并记住）
@@ -4342,6 +6507,24 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
   function handleEvent(m) {
     switch (m.t) {
+      case 'character-changed':
+        if (m.characterId && m.characterId !== activeCharacterId && CHARACTERS[m.characterId]) {
+          switchCharacter(m.characterId)
+        }
+        break
+
+      case 'character-deleted':
+        if (m.characterId) {
+          delete CHARACTERS[m.characterId]
+          if (activeCharacterId === m.characterId) {
+            switchCharacter(m.fallbackCharacterId || 'tutu')
+          }
+          if (ui && ui.menu && ui.menu.focused === 'character') {
+            renderPane('character')
+          }
+        }
+        break
+
       case 'hello':
         agent.status = m.status || 'idle'
         break
@@ -4393,6 +6576,22 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         ui.bubble.show(m.text || '', { stream: true, sticky: true })
         break
 
+      case 'voice-config-updated':
+        if (m.characterId && m.voice && CHARACTERS[m.characterId]) {
+          CHARACTERS[m.characterId].voice = Object.assign(CHARACTERS[m.characterId].voice || {}, m.voice)
+        }
+        break
+
+      case 'voice-speech':
+        if (CFG.sound !== false && (m.url || m.audioUrl)) {
+          const audioUrl = m.audioUrl || m.url
+          if (m.text) {
+            ui.bubble.show(m.text, { name: activeCharInfo().name, sticky: false, duration: 4500 })
+          }
+          playAudioWithLipSync(audioUrl)
+        }
+        break
+
       case 'assistant':
         agent.hasStream = false
         rig.talking = false
@@ -4400,8 +6599,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         if (m.text) {
           setStatus('speaking')
           agent.lastText = m.text.slice(0, 4000)
-          ui.bubble.show(agent.lastText, { name: 'DS 鲸鱼娘', sticky: true })
-        if (agent.lastText && agent.lastText.length > 60) pushReport('任务简报', agent.lastText)
+          ui.bubble.show(agent.lastText, { name: activeCharInfo().name, sticky: true })
+          if (agent.lastText && agent.lastText.length > 60) pushReport('任务简报', agent.lastText)
+          // 伴侣口播语音统一由服务端智能摘要后广播 voice-speech 事件驱动播放，避免前端重复触发合成导致重音回声
         }
         if (m.usage) {
           const t = (m.usage.input || 0) + (m.usage.cache || 0) + (m.usage.output || 0)

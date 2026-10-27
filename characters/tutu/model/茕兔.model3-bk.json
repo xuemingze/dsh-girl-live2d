@@ -1,0 +1,32 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "茕兔.moc3",
+		"Textures": [
+			"茕兔.4096/texture_00.png",
+			"茕兔.4096/texture_01.png",
+			"茕兔.4096/texture_02.png",
+			"茕兔.4096/texture_03.png",
+			"茕兔.4096/texture_04.png",
+			"茕兔.4096/texture_05.png",
+			"茕兔.4096/texture_06.png",
+			"茕兔.4096/texture_07.png",
+			"茕兔.4096/texture_08.png",
+			"茕兔.4096/texture_09.png"
+		],
+		"Physics": "茕兔.physics3.json",
+		"DisplayInfo": "茕兔.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		}
+	]
+}

@@ -1,7 +1,7 @@
 {
-  "name": "dsh-whale-girl-live2d",
-  "version": "0.4.6",
-  "description": "鲸鱼娘桌宠：把 Live2D 鲸鱼娘挂进 DSH Web 界面的桌宠插件——模型常驻桌面，跟着 agent 的真实状态换表情与动作，点一下就能直接跟 agent 说话，右键菜单可换表情 / 换装 / 摆场景 / 演小动作。（Whale Girl Pet: a Live2D companion for the DeepSeek Harness Web UI. Model assets are non-commercial, CC BY-NC-SA 4.0.）",
+  "name": "dsh-girl-live2d",
+  "version": "0.5.0",
+  "description": "Live2D 多伴侣桌宠插件：支持深海鲸鱼娘、兔兔、西域舞女、可可女仆、冰冰龙等多角色即时无缝切换、自定义模型导入与删除、可视化表情/动作/场景/装饰映射、自然语言生成专属声线与双轨对话伴读、以及桌面自动化视觉协同。（改自 Andersen216/dsh-whale-girl-live2d 项目）",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -11,13 +11,19 @@
     "desktop-pet",
     "桌宠",
     "鲸鱼娘",
-    "whale-girl"
+    "whale-girl",
+    "multi-character",
+    "tts"
   ],
   "type": "module",
   "main": "lib/index.js",
   "files": [
     "lib",
     "assets",
+    "characters",
+    "voice_engine",
+    "visual_hands",
+    "tools",
     "docs",
     "skill",
     "cordis.patch.yml",
@@ -55,10 +61,15 @@
   },
   "license": "MIT",
   "author": {
-    "name": "Andersen216",
-    "url": "https://github.com/Andersen216"
+    "name": "xuemingze",
+    "url": "https://github.com/xuemingze"
   },
   "contributors": [
+    {
+      "name": "Andersen216",
+      "url": "https://github.com/Andersen216",
+      "role": "dsh-whale-girl-live2d 原项目作者"
+    },
     {
       "name": "上善无形",
       "url": "https://space.bilibili.com/4456176",
@@ -75,12 +86,12 @@
       "role": "Live2D 模型制作（绑定/动作/表情）"
     }
   ],
-  "homepage": "https://github.com/Andersen216/dsh-whale-girl-live2d",
+  "homepage": "https://github.com/xuemingze/dsh-girl-live2d#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Andersen216/dsh-whale-girl-live2d.git"
+    "url": "git+https://github.com/xuemingze/dsh-girl-live2d.git"
   },
   "bugs": {
-    "url": "https://github.com/Andersen216/dsh-whale-girl-live2d/issues"
+    "url": "https://github.com/xuemingze/dsh-girl-live2d/issues"
   }
 }
