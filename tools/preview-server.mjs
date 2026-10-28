@@ -339,12 +339,8 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  if (url === '/dsh-pet/save-to-pool') {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      let j = {}
-      try { j = JSON.parse(body || '{}') } catch (e) {}
+  if (url === '/dsh-pet/save-to-pool' || url === '/dsh-pet/save-to-pool/') {
+    const handleSave = (j) => {
       let bufferToSave = null
       if (j.audioBase64) {
         try {
@@ -370,6 +366,22 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: e.message }))
       }
+    }
+
+    if (req.method === 'GET') {
+      const u = new URL(req.url, 'http://localhost')
+      return handleSave({
+        name: u.searchParams.get('name') || '',
+        audioBase64: u.searchParams.get('audioBase64') || '',
+      })
+    }
+
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let j = {}
+      try { j = JSON.parse(body || '{}') } catch (e) {}
+      return handleSave(j)
     })
     return
   }

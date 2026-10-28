@@ -15,7 +15,7 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -144,7 +144,7 @@ const BASE = `http://127.0.0.1:${PORT}`
 
 console.log('\n宿主插件集成测试 (lib/index.js)\n')
 
-const mod = await import(path.join(ROOT, 'lib', 'index.js'))
+const mod = await import(pathToFileURL(path.join(ROOT, 'lib', 'index.js')).href)
 const plugin = mod.default
 check('模块导出 default 插件对象', !!plugin && typeof plugin.apply === 'function', plugin && plugin.name)
 check('inject 声明了 webServer 与 connection', Array.isArray(plugin.inject) && plugin.inject.includes('webServer') && plugin.inject.includes('connection'), (plugin.inject || []).join(','))

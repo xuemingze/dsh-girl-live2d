@@ -306,49 +306,102 @@
 
       const vol = Math.max(0, Math.min(1, Number(CFG.ttsVolume ?? 1.0)))
 
-      // 优先走 Web Audio decodeAudioData，无 CORS 限制、无节点生命周期冲突、振幅分析实时精准
-      try {
-        const response = await fetch(url)
-        if (!response.ok) throw new Error('HTTP ' + response.status)
-        const arrayBuffer = await response.arrayBuffer()
-        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
-        
-        const source = audioCtx.createBufferSource()
-        source.buffer = audioBuffer
-        
-        const gainNode = audioCtx.createGain()
-        gainNode.gain.setValueAtTime(vol, audioCtx.currentTime)
+      // 1. 安全获取音频二进制数据（自动处理鉴权 Header、多端口与编解码容错）
+      let blob = null
+      let arrayBuffer = null
+      const fetchHeaders = {}
+      if (DESK_TOKEN) fetchHeaders['x-dsh-pet-desk'] = DESK_TOKEN
 
-        source.connect(audioAnalyser)
-        audioAnalyser.connect(gainNode)
-        gainNode.connect(audioCtx.destination)
-
-        currentAudioSource = source
-        currentAudioGain = gainNode
-        isSpeakingAudio = true
-        setStatus('speaking')
-
-        source.onended = () => {
-          if (currentAudioSource === source) {
-            currentAudioSource = null
-            isSpeakingAudio = false
-            audioCurrentVolume = 0
-            setStatus('idle')
-          }
+      const candidateUrls = [url]
+      if (typeof url === 'string') {
+        if (url.startsWith('/dsh-pet/voices_pool/')) {
+          const rawRel = url.slice('/dsh-pet/voices_pool/'.length)
+          candidateUrls.push('http://127.0.0.1:9880/voices_pool/' + rawRel)
+          candidateUrls.push('/dsh-pet/voices_pool/' + decodeURIComponent(rawRel))
+        } else if (url.startsWith('http://127.0.0.1:9880/voices_pool/')) {
+          const rawRel = url.slice('http://127.0.0.1:9880/voices_pool/'.length)
+          candidateUrls.push('/dsh-pet/voices_pool/' + rawRel)
         }
-        source.start(0)
-        return
-      } catch (decodeErr) {
-        console.warn('[桌宠语音] decodeAudioData 失败，降级原生 Audio 播放:', decodeErr)
       }
 
-      // 降级使用原生 HTML5 Audio
-      const audio = new Audio(url)
+      for (const curUrl of candidateUrls) {
+        try {
+          const resp = await fetch(curUrl, { headers: fetchHeaders, credentials: 'include' })
+          if (resp.ok) {
+            blob = await resp.blob()
+            arrayBuffer = await blob.arrayBuffer()
+            break
+          }
+        } catch (e) {}
+      }
+
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        console.warn('[桌宠语音] 无法从所有候选地址获取音频数据:', candidateUrls)
+        if (ui && ui.bubble) ui.bubble.show('示例音频加载失败，请检查音色池文件是否存在~', { duration: 3000 })
+        return
+      }
+
+      const blobUrl = URL.createObjectURL(blob)
+
+      // 2. 优先走 Web Audio decodeAudioData，支持 Promise 与 Callback 双规范并驱动口型
+      try {
+        let audioBuffer = null
+        try {
+          audioBuffer = await new Promise((resolve, reject) => {
+            let done = false
+            const p = audioCtx.decodeAudioData(
+              arrayBuffer.slice(0),
+              (b) => { if (!done) { done = true; resolve(b) } },
+              (err) => { if (!done) { done = true; reject(err) } }
+            )
+            if (p && typeof p.then === 'function') {
+              p.then((b) => { if (!done) { done = true; resolve(b) } }).catch((err) => { if (!done) { done = true; reject(err) } })
+            }
+          })
+        } catch (decErr) {
+          console.warn('[桌宠语音] Web Audio decodeAudioData 失败:', decErr)
+        }
+
+        if (audioBuffer) {
+          const source = audioCtx.createBufferSource()
+          source.buffer = audioBuffer
+
+          const gainNode = audioCtx.createGain()
+          gainNode.gain.setValueAtTime(vol, audioCtx.currentTime)
+
+          source.connect(audioAnalyser)
+          audioAnalyser.connect(gainNode)
+          gainNode.connect(audioCtx.destination)
+
+          currentAudioSource = source
+          currentAudioGain = gainNode
+          isSpeakingAudio = true
+          setStatus('speaking')
+
+          source.onended = () => {
+            try { URL.revokeObjectURL(blobUrl) } catch (e) {}
+            if (currentAudioSource === source) {
+              currentAudioSource = null
+              isSpeakingAudio = false
+              audioCurrentVolume = 0
+              setStatus('idle')
+            }
+          }
+          source.start(0)
+          return
+        }
+      } catch (err) {
+        console.warn('[桌宠语音] Web Audio 播放链路异常，降级原生 HTML5 Audio:', err)
+      }
+
+      // 3. 降级使用原生 HTML5 Audio 播放本地 blob URL（绝对无 CORS 和 Header 限制）
+      const audio = new Audio(blobUrl)
       audio.volume = vol
       currentAudioElement = audio
       isSpeakingAudio = true
       setStatus('speaking')
       audio.onended = () => {
+        try { URL.revokeObjectURL(blobUrl) } catch (e) {}
         if (currentAudioElement === audio) {
           currentAudioElement = null
           isSpeakingAudio = false
@@ -356,22 +409,28 @@
           setStatus('idle')
         }
       }
-      audio.onerror = () => {
+      audio.onerror = (e) => {
+        try { URL.revokeObjectURL(blobUrl) } catch (e) {}
         if (currentAudioElement === audio) {
           currentAudioElement = null
           isSpeakingAudio = false
           audioCurrentVolume = 0
           setStatus('idle')
         }
+        console.warn('[桌宠语音] HTML5 Audio 播放失败:', e)
       }
-      audio.play().catch(() => {
+      audio.play().catch((err) => {
+        console.warn('[桌宠语音] 自动播放受限或播放失败:', err)
         if (currentAudioElement === audio) {
           currentAudioElement = null
           isSpeakingAudio = false
+          audioCurrentVolume = 0
+          setStatus('idle')
         }
       })
     } catch (e) {
       isSpeakingAudio = false
+      console.warn('[桌宠语音] playAudioWithLipSync 异常:', e)
     }
   }
 
@@ -5175,6 +5234,51 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       volLabel.append(volRange, volVal)
 
       // 2. 🎵 示例音色库卡片（本地音色池）
+      const SAMPLE_VOICE_CONFIGS = {
+        '元气甜美_晓伊.wav': {
+          voice_name: 'zh-CN-XiaoyiNeural',
+          prompt: '元气甜美活泼少女，语调轻快',
+          rate: '+5%',
+          pitch: '+2Hz',
+        },
+        '冷艳御姐_晓妮.wav': {
+          voice_name: 'zh-CN-XiaoniNeural',
+          prompt: '冷艳成熟御姐，语调平静优雅带气场',
+          rate: '-5%',
+          pitch: '-2Hz',
+        },
+        '温柔治愈_晓晓.wav': {
+          voice_name: 'zh-CN-XiaoxiaoNeural',
+          prompt: '温柔治愈系大姐姐，语气柔和轻缓',
+          rate: '-2%',
+          pitch: '+0Hz',
+        },
+        '傲娇萌妹_晓伊.wav': {
+          voice_name: 'zh-CN-XiaoyiNeural',
+          prompt: '傲娇萌妹，有点小任性又很在乎主人',
+          rate: '+8%',
+          pitch: '+3Hz',
+        },
+        '沉稳知性_云健.wav': {
+          voice_name: 'zh-CN-YunjianNeural',
+          prompt: '沉稳知性青年，咬字清晰干练',
+          rate: '+0%',
+          pitch: '-2Hz',
+        },
+        '软萌台湾腔_晓臻.wav': {
+          voice_name: 'zh-TW-HsiaoChenNeural',
+          prompt: '软萌可爱的台湾腔调，亲切甜美',
+          rate: '+2%',
+          pitch: '+1Hz',
+        },
+        'tianmei_shaonv.wav': {
+          voice_name: 'zh-CN-XiaoyiNeural',
+          prompt: '甜美活泼少女，元气满满',
+          rate: '+0%',
+          pitch: '+0Hz',
+        },
+      }
+
       const poolCard = $('div', 'dshp-panel-card')
       poolCard.style.padding = '10px 12px'
       poolCard.style.background = 'rgba(255, 255, 255, 0.04)'
@@ -5223,6 +5327,22 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       poolHeaderBtns.append(restoreDefaultsBtn, refreshPoolBtn)
       poolHeader.append(poolTitle, poolHeaderBtns)
 
+      // 当前生效的角色音色状态指示条
+      const activeVoiceStatus = $('div', 'dshp-hint')
+      activeVoiceStatus.style.fontSize = '11px'
+      activeVoiceStatus.style.padding = '4px 8px'
+      activeVoiceStatus.style.background = 'rgba(114, 241, 184, 0.08)'
+      activeVoiceStatus.style.borderRadius = '5px'
+      activeVoiceStatus.style.border = '1px solid rgba(114, 241, 184, 0.2)'
+      activeVoiceStatus.style.color = '#a3f7d2'
+      function updateActiveVoiceBadge() {
+        const cv = (activeCharInfo() && activeCharInfo().voice) || {}
+        const refName = cv.referenceAudio ? cv.referenceAudio.split('/').pop() : ''
+        const vDisplay = refName || cv.prompt || cv.voice_name || '默认晓晓'
+        activeVoiceStatus.innerHTML = `当前伴侣发声音色：<b style="color:#fff;">${activeCharInfo().name}</b> · <span style="color:#72f1b8;">${vDisplay}</span> (${cv.rate || '+0%'}, ${cv.pitch || '+0Hz'})`
+      }
+      updateActiveVoiceBadge()
+
       // 快捷示例音键（移动到示例音色库中，点击直接发声试听并带动口型）
       const quickSampleHeader = $('div', 'dshp-hint', '🔊 点击示例音键直接试听：')
       quickSampleHeader.style.fontSize = '10.5px'
@@ -5251,7 +5371,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         chip.style.color = '#a3f7d2'
         chip.title = `点击试听「${tag}」示例音频并驱动口型`
         chip.addEventListener('click', async () => {
-          ui.bubble.show(`正在试听「${tag}」示例声音...`, { duration: 3000 })
+          if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
+          if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}) }
+          ui.bubble.show(`正在试听「${tag}」示例声音... 可在下方列表直接点击「🌟 设为角色音」应用`, { duration: 3500 })
           await playAudioWithLipSync('/dsh-pet/voices_pool/' + encodeURIComponent(file), { force: true })
         })
         quickSampleRow.appendChild(chip)
@@ -5283,6 +5405,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         try {
           const data = await apiFetch(BASE + '/voices')
           poolList.innerHTML = ''
+          updateActiveVoiceBadge()
           const list = (data && data.localPool) || []
           if (list.length === 0) {
             const emptyEl = $('div')
@@ -5341,8 +5464,70 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             playBtn.style.fontSize = '10px'
             playBtn.title = '试听此示例音色并驱动桌宠口型'
             playBtn.addEventListener('click', async () => {
+              if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
+              if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}) }
               ui.bubble.show(`正在试听示例音色「${item.name || item.file}」...`, { duration: 3000 })
               await playAudioWithLipSync(item.path, { force: true })
+            })
+
+            // 检查当前伴侣是否正在使用该示例音
+            const curVoice = (activeCharInfo() && activeCharInfo().voice) || {}
+            const isUsing = (curVoice.referenceAudio && curVoice.referenceAudio.endsWith(item.file)) ||
+                            (SAMPLE_VOICE_CONFIGS[item.file] && SAMPLE_VOICE_CONFIGS[item.file].voice_name === curVoice.voice_name)
+
+            // [🌟 设为角色音] 按钮：直接将此示例音频设为当前伴侣默认声音
+            const setCharVoiceBtn = $('button', 'dshp-btn' + (isUsing ? ' dshp-primary' : ''), isUsing ? '✅ 当前生效' : '🌟 设为角色音')
+            setCharVoiceBtn.style.padding = '3px 7px'
+            setCharVoiceBtn.style.fontSize = '10px'
+            setCharVoiceBtn.title = `将此示例音设置为「${activeCharInfo().name}」的角色声音`
+            setCharVoiceBtn.addEventListener('click', async () => {
+              if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
+              if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}) }
+              setCharVoiceBtn.textContent = '保存中...'
+              setCharVoiceBtn.disabled = true
+              try {
+                const conf = SAMPLE_VOICE_CONFIGS[item.file] || {}
+                const vName = conf.voice_name || curVoice.voice_name || 'zh-CN-XiaoxiaoNeural'
+                const vPrompt = conf.prompt || item.name || ''
+                const vRate = conf.rate || '+0%'
+                const vPitch = conf.pitch || '+0Hz'
+                const refP = 'voice_engine/voices_pool/' + item.file
+
+                await apiFetch(BASE + '/save-voice-config', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    characterId: activeCharacterId,
+                    voice: vName,
+                    prompt: vPrompt,
+                    rate: vRate,
+                    pitch: vPitch,
+                    referenceAudio: refP,
+                    referenceText: item.name,
+                  }),
+                })
+
+                if (activeCharInfo()) {
+                  activeCharInfo().voice = Object.assign(activeCharInfo().voice || {}, {
+                    voice_name: vName,
+                    prompt: vPrompt,
+                    rate: vRate,
+                    pitch: vPitch,
+                    referenceAudio: refP,
+                    referenceText: item.name,
+                  })
+                }
+
+                promptInput.value = vPrompt
+                refAudioInput.value = refP
+
+                ui.bubble.show(`已成功将「${item.name || item.file}」设为「${activeCharInfo().name}」的角色声音！`, { duration: 3500 })
+                await playAudioWithLipSync(item.path, { force: true })
+                loadVoicePool()
+              } catch (e) {
+                alert('设置角色音失败: ' + (e.message || e))
+              } finally {
+                setCharVoiceBtn.disabled = false
+              }
             })
 
             // [📌 设为参考] 按钮：填入下方本地模型克隆参考路径
@@ -5379,7 +5564,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
               }
             })
 
-            btnGroup.append(playBtn, pickBtn, delBtn)
+            btnGroup.append(playBtn, setCharVoiceBtn, pickBtn, delBtn)
             row.append(infoCol, btnGroup)
             poolList.appendChild(row)
           }
@@ -5389,7 +5574,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
 
       refreshPoolBtn.addEventListener('click', () => loadVoicePool())
-      poolCard.append(poolHeader, quickSampleHeader, quickSampleRow, poolList)
+      poolCard.append(poolHeader, activeVoiceStatus, quickSampleHeader, quickSampleRow, poolList)
 
       // 3. ✨ 提示词声音生成器卡片
       const genCard = $('div', 'dshp-panel-card')
@@ -5657,13 +5842,75 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             }
           }
 
-          const res = await apiFetch(BASE + '/save-to-pool', {
-            method: 'POST',
-            body: JSON.stringify({
-              name: finalName,
-              characterId: activeCharacterId,
-            }),
-          })
+          // 取出当前音频二进制并转为 Base64（双保机制：既传 Base64，又传参数，且支持多路由自动重试）
+          let audioBase64 = null
+          if (lastGeneratedAudioUrl) {
+            try {
+              const fetchHeaders = {}
+              if (DESK_TOKEN) fetchHeaders['x-dsh-pet-desk'] = DESK_TOKEN
+              const aRes = await fetch(lastGeneratedAudioUrl, { headers: fetchHeaders, credentials: 'include' })
+              if (aRes.ok) {
+                const aBuf = await aRes.arrayBuffer()
+                const u8 = new Uint8Array(aBuf)
+                let bStr = ''
+                for (let i = 0; i < u8.length; i += 8192) {
+                  bStr += String.fromCharCode.apply(null, u8.subarray(i, i + 8192))
+                }
+                audioBase64 = btoa(bStr)
+              }
+            } catch (e) {
+              console.warn('[桌宠语音] 提取当前音频 Base64 失败，走后端缓存兜底:', e)
+            }
+          }
+
+          // 多路由阶梯式保存策略：先走标准 POST，若遇 405/网络错误，依次自动尝试 GET 与 9880 备用端口
+          let res = null
+          let saveErr = null
+
+          // 1. 尝试 POST /dsh-pet/save-to-pool
+          try {
+            res = await apiFetch(BASE + '/save-to-pool', {
+              method: 'POST',
+              body: JSON.stringify({
+                name: finalName,
+                characterId: activeCharacterId,
+                audioBase64: audioBase64,
+              }),
+            })
+          } catch (e1) {
+            saveErr = e1
+          }
+
+          // 2. 尝试 GET /dsh-pet/save-to-pool?name=...
+          if (!res || !res.ok) {
+            try {
+              res = await apiFetch(BASE + '/save-to-pool?name=' + encodeURIComponent(finalName) + '&characterId=' + encodeURIComponent(activeCharacterId), {
+                method: 'GET',
+              })
+              saveErr = null
+            } catch (e2) {
+              saveErr = e2
+            }
+          }
+
+          // 3. 尝试 9880 独立直连端口 http://127.0.0.1:9880/save_to_pool
+          if (!res || !res.ok) {
+            try {
+              const pResp = await fetch('http://127.0.0.1:9880/save_to_pool', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: finalName,
+                  characterId: activeCharacterId,
+                  audioBase64: audioBase64,
+                }),
+              })
+              if (pResp.ok) {
+                res = await pResp.json()
+                saveErr = null
+              }
+            } catch (e3) {}
+          }
 
           if (res && res.ok) {
             saveFeedback.style.color = '#52c41a'
@@ -5673,7 +5920,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             loadVoicePool()
             setTimeout(() => { saveFeedback.textContent = '' }, 4000)
           } else {
-            throw new Error((res && res.error) || '保存失败')
+            throw new Error((res && res.error) || (saveErr && saveErr.message) || '保存失败')
           }
         } catch (err) {
           saveFeedback.style.color = '#ff4d4f'

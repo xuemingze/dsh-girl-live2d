@@ -27,6 +27,7 @@ CHARACTER_VOICES = {
 
 DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
 LOCAL_VOICES_POOL_DIR = os.environ.get("DSH_VOICES_POOL_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices_pool"))
+_LATEST_AUDIO_BUFFER: Optional[bytes] = None
 
 # 预设音色库定义
 AVAILABLE_VOICES = [
@@ -204,6 +205,35 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        elif self.path.startswith("/voices_pool/") or self.path.startswith("/dsh-pet/voices_pool/"):
+            rel_part = self.path.split("/voices_pool/", 1)[-1].split("?")[0]
+            from urllib.parse import unquote
+            decoded_file = os.path.basename(unquote(rel_part))
+            target_p = os.path.join(LOCAL_VOICES_POOL_DIR, decoded_file)
+            if os.path.exists(target_p) and os.path.isfile(target_p):
+                try:
+                    with open(target_p, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self._send_cors()
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                except Exception as e:
+                    self.send_error(500, str(e))
+                    return
+            self.send_error(404, f"File Not Found: {decoded_file}")
+            return
+        elif self.path.startswith(("/save_to_pool", "/save-to-pool", "/dsh-pet/save-to-pool")):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            name = qs.get("name", [""])[0]
+            audio_base64 = qs.get("audioBase64", [""])[0]
+            self._save_to_pool_bytes(name=name, audio_base64=audio_base64)
+            return
         else:
             self.send_error(404, f"Not Found: {self.path}")
 
@@ -212,8 +242,61 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self._handle_tts()
         elif self.path.startswith("/generate_voice"):
             self._handle_generate_voice()
+        elif self.path.startswith(("/save_to_pool", "/save-to-pool", "/dsh-pet/save-to-pool")):
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body_bytes = self.rfile.read(content_length)
+                payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except Exception:
+                payload = {}
+            self._save_to_pool_bytes(name=payload.get("name", ""), audio_base64=payload.get("audioBase64", ""))
         else:
             self.send_error(404, f"Not Found: {self.path}")
+
+    def _save_to_pool_bytes(self, name: str = "", audio_base64: str = ""):
+        global _LATEST_AUDIO_BUFFER
+        import base64
+        buf_to_save = None
+        if audio_base64:
+            try:
+                buf_to_save = base64.b64decode(audio_base64)
+            except Exception as e:
+                logger.warning(f"解码 base64 音频失败: {e}")
+        elif _LATEST_AUDIO_BUFFER:
+            buf_to_save = _LATEST_AUDIO_BUFFER
+
+        if not buf_to_save:
+            self.send_response(400)
+            self._send_cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": "没有可供保存的音频数据，请先生成声音"}).encode("utf-8"))
+            return
+
+        raw_name = (name or f"sample_{int(asyncio.get_event_loop_policy().get_event_loop().time())}").strip()
+        safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fa5-]', '_', raw_name)
+        if not safe_name.lower().endswith(".wav"):
+            safe_name += ".wav"
+        target_p = os.path.join(LOCAL_VOICES_POOL_DIR, safe_name)
+        try:
+            with open(target_p, "wb") as f:
+                f.write(buf_to_save)
+            res_data = {
+                "ok": True,
+                "file": safe_name,
+                "path": f"/voices_pool/{safe_name}"
+            }
+            self.send_response(200)
+            self._send_cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(res_data, ensure_ascii=False).encode("utf-8"))
+        except Exception as e:
+            self.send_response(500)
+            self._send_cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
 
     def _handle_tts(self):
         try:
@@ -322,6 +405,8 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
 
         try:
             wav_bytes = asyncio.run(_synthesize_edge_tts_to_wav(clean_text, target_voice, rate=rate, pitch=pitch))
+            global _LATEST_AUDIO_BUFFER
+            _LATEST_AUDIO_BUFFER = wav_bytes
             self.send_response(200)
             self._send_cors()
             self.send_header("Content-Type", "audio/wav")
