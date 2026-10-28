@@ -296,6 +296,8 @@
     try {
       if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+      }
+      if (!audioAnalyser) {
         audioAnalyser = audioCtx.createAnalyser()
         audioAnalyser.fftSize = 256
         audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount)
@@ -343,9 +345,14 @@
           const opt = is9880 ? { mode: 'cors' } : { headers: fetchHeaders, credentials: 'include' }
           const resp = await fetch(curUrl, opt)
           if (resp.ok) {
-            blob = await resp.blob()
-            arrayBuffer = await blob.arrayBuffer()
-            if (arrayBuffer && arrayBuffer.byteLength > 0) break
+            const ct = (resp.headers.get('content-type') || '').toLowerCase()
+            if (ct.includes('application/json') || ct.includes('text/html')) continue
+            const ab = await resp.arrayBuffer()
+            if (ab && ab.byteLength > 200) {
+              arrayBuffer = ab
+              blob = new Blob([ab], { type: 'audio/wav' })
+              break
+            }
           }
         } catch (e) {}
       }
@@ -5325,9 +5332,29 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         restoreDefaultsBtn.disabled = true
         restoreDefaultsBtn.textContent = '恢复中...'
         try {
-          await apiFetch(BASE + '/init-default-samples', { method: 'POST' })
-          ui.bubble.show('官方全套示例音色已恢复！', { duration: 2500 })
-          await loadVoicePool()
+          let ok = false
+          try {
+            const r1 = await apiFetch(BASE + '/init-default-samples', { method: 'POST' })
+            if (r1 && r1.ok) ok = true
+          } catch (e1) {}
+          if (!ok) {
+            try {
+              const r2 = await fetch('http://127.0.0.1:9880/init-default-samples', { method: 'POST', mode: 'cors' })
+              if (r2.ok) ok = true
+            } catch (e2) {}
+          }
+          if (!ok) {
+            try {
+              const r3 = await fetch('http://127.0.0.1:9880/init-default-samples', { method: 'GET', mode: 'cors' })
+              if (r3.ok) ok = true
+            } catch (e3) {}
+          }
+          if (ok) {
+            ui.bubble.show('官方全套示例音色已恢复！', { duration: 2500 })
+            await loadVoicePool()
+          } else {
+            throw new Error('TTS 9880 服务或主服务未响应')
+          }
         } catch (e) {
           alert('恢复失败: ' + e.message)
         } finally {
@@ -5447,6 +5474,25 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             poolList.appendChild(emptyEl)
             return
           }
+          // 唯一确定当前伴侣生效的示例音频（杜绝多个同基座音色同时显示“当前生效”）
+          const curVoice = (activeCharInfo() && activeCharInfo().voice) || {}
+          const explicitRefFile = curVoice.referenceAudio ? curVoice.referenceAudio.replace(/\\/g, '/').split('/').pop() : ''
+          let activeSampleFile = ''
+          if (explicitRefFile && list.some(x => x.file === explicitRefFile)) {
+            activeSampleFile = explicitRefFile
+          } else {
+            const byPrompt = list.find(x => SAMPLE_VOICE_CONFIGS[x.file] && curVoice.prompt && SAMPLE_VOICE_CONFIGS[x.file].prompt === curVoice.prompt)
+            if (byPrompt) {
+              activeSampleFile = byPrompt.file
+            } else {
+              // 优先选带中文名且匹配 voice_name 的首个官方示例
+              const byVoiceCn = list.find(x => /[\u4e00-\u9fa5]/.test(x.file) && SAMPLE_VOICE_CONFIGS[x.file] && SAMPLE_VOICE_CONFIGS[x.file].voice_name === curVoice.voice_name)
+              const byVoiceAny = list.find(x => SAMPLE_VOICE_CONFIGS[x.file] && SAMPLE_VOICE_CONFIGS[x.file].voice_name === curVoice.voice_name)
+              if (byVoiceCn) activeSampleFile = byVoiceCn.file
+              else if (byVoiceAny) activeSampleFile = byVoiceAny.file
+            }
+          }
+
           for (const item of list) {
             const card = $('div')
             card.style.display = 'flex'
@@ -5459,10 +5505,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             card.style.boxSizing = 'border-box'
             card.style.width = '100%'
 
-            // 检查当前伴侣是否正在使用该示例音
-            const curVoice = (activeCharInfo() && activeCharInfo().voice) || {}
-            const isUsing = (curVoice.referenceAudio && curVoice.referenceAudio.endsWith(item.file)) ||
-                            (SAMPLE_VOICE_CONFIGS[item.file] && SAMPLE_VOICE_CONFIGS[item.file].voice_name === curVoice.voice_name)
+            // 检查当前伴侣是否正在使用该示例音（严格唯一匹配）
+            const isUsing = (item.file === activeSampleFile)
 
             // 第一行：🎵 音色名称 + 生效标识 + 大小标签
             const headerRow = $('div')

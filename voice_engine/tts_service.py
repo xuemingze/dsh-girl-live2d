@@ -195,13 +195,36 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path in ("/", "/health", "/ping"):
+        clean_path = self.path.split("?")[0].rstrip("/") or "/"
+        if clean_path in ("/", "/health", "/ping"):
             self.send_response(200)
             self._send_cors()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(b'{"status": "ok", "service": "dsh-girl-live2d TTS Service"}')
-        elif self.path.startswith(("/voices_list", "/voices", "/dsh-pet/voices")):
+        elif self.path.startswith(("/voices_pool/", "/dsh-pet/voices_pool/")):
+            rel_part = self.path.split("/voices_pool/", 1)[-1].split("?")[0]
+            from urllib.parse import unquote
+            decoded_file = os.path.basename(unquote(rel_part))
+            target_p = os.path.join(LOCAL_VOICES_POOL_DIR, decoded_file)
+            if os.path.exists(target_p) and os.path.isfile(target_p):
+                try:
+                    with open(target_p, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self._send_cors()
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                except Exception as e:
+                    self._send_error_json(500, str(e))
+                    return
+            self._send_error_json(404, f"File Not Found: {decoded_file}")
+            return
+        elif clean_path in ("/voices_list", "/voices", "/dsh-pet/voices"):
             local_wavs = []
             if os.path.exists(LOCAL_VOICES_POOL_DIR):
                 try:
@@ -228,27 +251,8 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif self.path.startswith("/voices_pool/") or self.path.startswith("/dsh-pet/voices_pool/"):
-            rel_part = self.path.split("/voices_pool/", 1)[-1].split("?")[0]
-            from urllib.parse import unquote
-            decoded_file = os.path.basename(unquote(rel_part))
-            target_p = os.path.join(LOCAL_VOICES_POOL_DIR, decoded_file)
-            if os.path.exists(target_p) and os.path.isfile(target_p):
-                try:
-                    with open(target_p, "rb") as f:
-                        data = f.read()
-                    self.send_response(200)
-                    self._send_cors()
-                    self.send_header("Content-Type", "audio/wav")
-                    self.send_header("Content-Length", str(len(data)))
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
-                    self.wfile.write(data)
-                    return
-                except Exception as e:
-                    self._send_error_json(500, str(e))
-                    return
-            self._send_error_json(404, f"File Not Found: {decoded_file}")
+        elif clean_path in ("/init-default-samples", "/init_default_samples", "/dsh-pet/init-default-samples"):
+            self._handle_init_default_samples()
             return
         elif self.path.startswith(("/save_to_pool", "/save-to-pool", "/dsh-pet/save-to-pool")):
             from urllib.parse import urlparse, parse_qs
@@ -261,10 +265,13 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self._send_error_json(404, f"Not Found: {self.path}")
 
     def do_POST(self):
+        clean_path = self.path.split("?")[0].rstrip("/") or "/"
         if self.path.startswith("/tts"):
             self._handle_tts()
-        elif self.path.startswith("/generate_voice"):
+        elif self.path.startswith(("/generate_voice", "/generate-voice", "/dsh-pet/generate-voice")):
             self._handle_generate_voice()
+        elif clean_path in ("/init-default-samples", "/init_default_samples", "/dsh-pet/init-default-samples"):
+            self._handle_init_default_samples()
         elif self.path.startswith(("/save_to_pool", "/save-to-pool", "/dsh-pet/save-to-pool")):
             try:
                 content_length = int(self.headers.get("Content-Length", 0))
@@ -277,6 +284,31 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self._handle_delete_voice()
         else:
             self._send_error_json(404, f"Not Found: {self.path}")
+
+    def _handle_init_default_samples(self):
+        default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_samples")
+        count = 0
+        try:
+            os.makedirs(LOCAL_VOICES_POOL_DIR, exist_ok=True)
+            if os.path.exists(default_dir):
+                import shutil
+                for f in os.listdir(default_dir):
+                    if f.lower().endswith(".wav"):
+                        src_p = os.path.join(default_dir, f)
+                        dst_p = os.path.join(LOCAL_VOICES_POOL_DIR, f)
+                        if not os.path.exists(dst_p):
+                            shutil.copy2(src_p, dst_p)
+                            count += 1
+            self.send_response(200)
+            self._send_cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            body = json.dumps({"ok": True, "restoredCount": count}, ensure_ascii=False).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            logger.error(f"[TTS Service] 恢复默认示例音色失败: {e}")
+            self._send_error_json(500, str(e))
 
     def _handle_delete_voice(self):
         try:
