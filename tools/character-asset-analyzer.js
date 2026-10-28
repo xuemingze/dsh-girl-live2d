@@ -72,7 +72,8 @@ const SLOT_MATCH_RULES = {
   },
   motions: {
     idle: /待机|idle|Scene1|wait|normal/i,
-    click: /点击|走路|触摸|互动|摸|抱|click|tap|walk/i,
+    walk: /走路|行走|散步|跑步|跑|walk|run/i,
+    click: /点击|触摸|互动|摸|抱|click|tap/i,
     done: /打瞌睡|完成|结束|睡觉|done|sleep|finish/i,
   }
 }

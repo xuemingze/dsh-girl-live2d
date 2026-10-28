@@ -93,6 +93,8 @@ let lowPower = false
 let overPanel = false
 let failCount = 0
 let lastHit = 'none'
+let FULLSCREEN_PRIMARY = true
+let cachedBounds = []
 
 // ——————————————————————————————————————————————————————————————
 // 通行证：插件启动时会写 ~/.dsh/dsh-live2d-pet-desktop.json
@@ -155,8 +157,32 @@ async function poll() {
     if (Date.now() - pointerHeldSince > 30000) pointerHeld = false // 兜底：mouseup 丢了也别卡死
     else return // 左键按住（页面在拖她）：别切穿透，否则拖动会断/抽搐
   }
+  const relX = Math.round(p.x - b.x)
+  const relY = Math.round(p.y - b.y)
+
+  if (FULLSCREEN_PRIMARY && cachedBounds.length > 0) {
+    const MARGIN = 30
+    let inAnyBound = false
+    for (let i = 0; i < cachedBounds.length; i++) {
+      const box = cachedBounds[i]
+      if (box && relX >= box.x - MARGIN && relX <= box.x + box.width + MARGIN &&
+                 relY >= box.y - MARGIN && relY <= box.y + box.height + MARGIN) {
+        inAnyBound = true
+        break
+      }
+    }
+    if (!inAnyBound) {
+      if (lastHit !== 'none') {
+        lastHit = 'none'
+        overPanel = false
+        setIgnore(true)
+      }
+      return
+    }
+  }
+
   try {
-    const kind = await win.webContents.executeJavaScript(hitJS(Math.round(p.x - b.x), Math.round(p.y - b.y)))
+    const kind = await win.webContents.executeJavaScript(hitJS(relX, relY))
     lastHit = kind
     overPanel = kind === 'panel'
     setIgnore(kind === 'none')
@@ -176,14 +202,30 @@ async function poll() {
 function readFullscreenPrimary() {
   try {
     const p = path.join(app.getPath('userData'), 'settings.json')
-    return JSON.parse(fs.readFileSync(p, 'utf8')).fullscreenPrimary === true
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'))
+    if (typeof data.fullscreenPrimary === 'boolean') {
+      return data.fullscreenPrimary
+    }
+    return true
   } catch (e) {
-    return false
+    return true
   }
 }
 
+function setFullscreenPrimary(val) {
+  try {
+    const p = path.join(app.getPath('userData'), 'settings.json')
+    let cur = {}
+    try { cur = JSON.parse(fs.readFileSync(p, 'utf8')) || {} } catch (e) {}
+    cur.fullscreenPrimary = !!val
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify(cur, null, 2))
+    FULLSCREEN_PRIMARY = !!val
+  } catch (e) {}
+}
+
 function createMain() {
-  const FULLSCREEN_PRIMARY = readFullscreenPrimary()
+  FULLSCREEN_PRIMARY = readFullscreenPrimary()
   const waFs = screen.getPrimaryDisplay().workArea
   win = new BrowserWindow({
     width: FULLSCREEN_PRIMARY ? waFs.width : WIN_W,
@@ -250,9 +292,10 @@ function createMain() {
   ipcMain.on('drag-start', async (_e, at) => {
   pointerHeld = true
   pointerHeldSince = Date.now()
-    // 小球用的是同一个 preload，也会发 drag-start；主窗口只是 hide() 没 destroy()，
-    // 不加这条守卫就会把看不见的主窗口搬走（PR 反馈）
     if (!win || win.isDestroyed() || !win.isVisible()) return
+    if (FULLSCREEN_PRIMARY) {
+      return
+    }
     // ⚠️ 不能直接用 overPanel（那是 90ms 轮询的上一次结果）：
     // 按下那一刻它恰好是 panel 时，这次拖动就被让给网页，只能在窗口内挪、整个窗口搬不动。
     // B 站 @F0rsEn 反馈的正是这条。改成「按下瞬间重新判一次」，几十毫秒的等待对拖动没影响。
@@ -278,6 +321,16 @@ function createMain() {
     dragTimer = null
     dragFrom = null
     savePos()
+  })
+  ipcMain.on('sync-bounds', (_e, bounds) => {
+    if (Array.isArray(bounds)) {
+      cachedBounds = bounds
+    } else if (bounds && typeof bounds === 'object') {
+      cachedBounds = [bounds]
+    }
+  })
+  ipcMain.on('set-fullscreen-primary', (_e, val) => {
+    setFullscreenPrimary(val)
   })
   // 前端那个 ↗ 符号：用默认浏览器打开 DSH 界面
   ipcMain.on('install-plugin', () => installPlugin())

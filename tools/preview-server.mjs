@@ -553,6 +553,15 @@ const server = http.createServer(async (req, res) => {
     }
     return serveFile(res, path.join(ROOT, 'characters', rel))
   }
+  if (url.startsWith('/dsh-pet/modules/')) {
+    let rel
+    try {
+      rel = decodeURIComponent(url.slice('/dsh-pet/modules/'.length))
+    } catch (e) {
+      rel = url.slice('/dsh-pet/modules/'.length)
+    }
+    return serveFile(res, path.join(ASSETS, 'modules', rel))
+  }
   if (url.startsWith('/dsh-pet/vendor/')) {
     return serveFile(res, path.join(ASSETS, 'vendor', url.slice('/dsh-pet/vendor/'.length)))
   }

@@ -44,6 +44,7 @@
       sleepAfterMs: 180000,
       bubbleTtlMs: 0,
       maxWidthRatio: 0.5,
+      roamEnabled: true,
     },
     BOOT.config || {},
   )
@@ -51,6 +52,74 @@
   const BASE = '/dsh-pet'
   const LS_KEY = 'dsh-live2d-pet:layout'
   const DESK_TOKEN = (BOOT && BOOT.token) || ''
+
+  // 面向对象核心动力学与漫步系统模块声明
+  let SpringPhysicsController = null
+  let FrameRateGovernor = null
+  let DockAutoHideController = null
+  let DesktopRoamEngine = null
+  let PRESS_PROFILE_DEFAULT = { depth: 0.12, volume: 0.6, pressOmega: 36, pressZeta: 0.95, releaseOmega: 22, releaseZeta: 0.3, kick: 34 }
+
+  let springPhysics = null
+  let frameRateGovernor = null
+  let dockAutoHide = null
+  let desktopRoamEngine = null
+
+  async function loadModules() {
+    try {
+      const mod = await import(BASE + '/modules/core-engines.js')
+      SpringPhysicsController = mod.SpringPhysicsController
+      FrameRateGovernor = mod.FrameRateGovernor
+      DockAutoHideController = mod.DockAutoHideController
+      if (mod.PRESS_PROFILE_DEFAULT) PRESS_PROFILE_DEFAULT = mod.PRESS_PROFILE_DEFAULT
+    } catch (e) {
+      if (window.__DSH_ENGINES__) {
+        SpringPhysicsController = window.__DSH_ENGINES__.SpringPhysicsController
+        FrameRateGovernor = window.__DSH_ENGINES__.FrameRateGovernor
+        DockAutoHideController = window.__DSH_ENGINES__.DockAutoHideController
+      }
+    }
+
+    try {
+      const rmod = await import(BASE + '/modules/roam-engine.js')
+      DesktopRoamEngine = rmod.DesktopRoamEngine
+    } catch (e) {
+      if (window.__DSH_ENGINES__) {
+        DesktopRoamEngine = window.__DSH_ENGINES__.DesktopRoamEngine
+      }
+    }
+  }
+
+  let lastReportedBounds = ''
+  function reportBoundsToShell() {
+    if (window.dshpetBridge && typeof window.dshpetBridge.syncBounds === 'function') {
+      const list = []
+      const addBox = (el) => {
+        if (!el) return
+        if (el.classList.contains('dshp-hidden') || el.style.display === 'none' || el.style.visibility === 'hidden') return
+        const r = el.getBoundingClientRect()
+        if (r.width > 0 && r.height > 0) {
+          list.push({
+            x: Math.round(r.left),
+            y: Math.round(r.top),
+            width: Math.round(r.width),
+            height: Math.round(r.height),
+          })
+        }
+      }
+      addBox(ui && ui.root)
+      if (ui && ui.menu && ui.menu.el && ui.menu.el.classList.contains('dshp-on')) addBox(ui.menu.el)
+      if (ui && ui.composer && ui.composer.el && ui.composer.el.classList.contains('dshp-on')) addBox(ui.composer.el)
+      if (ui && ui.bubble && ui.bubble.el && ui.bubble.el.classList.contains('dshp-on')) addBox(ui.bubble.el)
+      if (ui && ui.hud && ui.hud.el && ui.hud.el.classList.contains('dshp-on')) addBox(ui.hud.el)
+
+      const key = JSON.stringify(list)
+      if (key !== lastReportedBounds) {
+        lastReportedBounds = key
+        window.dshpetBridge.syncBounds(list)
+      }
+    }
+  }
 
   /** 彻底剔除思考内容（<think>、<thought>、<reasoning> 标签及未闭合的前置思考链） */
   function stripThinking(text) {
@@ -597,6 +666,11 @@
       resumeCharacterIdleMotion()
     }
     mask.dirty = true
+    if (desktopRoamEngine) {
+      if (model) desktopRoamEngine.baseModelY = model.y
+      desktopRoamEngine.currentStrategy = desktopRoamEngine.resolveStrategy()
+    }
+    reportBoundsToShell()
   }
 
   async function switchCharacter(charId) {
@@ -1253,7 +1327,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   border-radius:6px;background:transparent;color:var(--dshp-fg);opacity:.42;font-size:13px;line-height:18px}
 .dshp-report-x:hover{opacity:1;background:rgba(255,80,80,.14);color:#ff5b52}
 
-.dshp-root.dshp-hover .dshp-dock,.dshp-root.dshp-open .dshp-dock{opacity:1}
+.dshp-root.dshp-hover .dshp-dock,.dshp-root.dshp-open .dshp-dock,.dshp-dock.dshp-dock-active{opacity:1;pointer-events:auto}
 /* 菜单/设置内容过长时**可滚动**（鼠标滚轮、触控板直接搓都行）。
    ⚠️ 这里刻意只给「内容区」限高 + overflow，**不把面板改成 flex 容器** ——
    上次那样改会让内容区塌成 0 高（框弹出来但是空的）。 */
@@ -1704,6 +1778,17 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     const now = performance.now()
     const dt = Math.min(64, now - (applyRig._last || now)) / 1000
     applyRig._last = now
+
+    // 物理弹簧阻尼与动态捏脸缩放 (SpringPhysicsController)
+    if (springPhysics) {
+      springPhysics.step(dt)
+      const s = springPhysics.getScale(0.12, 0.6)
+      const facing = (desktopRoamEngine && desktopRoamEngine.facing) || 1
+      if (ui && ui.stage) {
+        ui.stage.style.transform = `scale(${facing * s.sx}, ${s.sy})`
+        ui.stage.style.transformOrigin = '50% 100%'
+      }
+    }
 
     const targets = new Map()
     if (rig.face) targets.set(rig.face, 1)
@@ -2176,6 +2261,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       injectStyle()
       ui = buildUI()
       await loadRuntime()
+      await loadModules()
       const [man, cdi] = await Promise.all([
         apiFetch(BASE + '/model/manifest.json', { cache: 'no-cache' }).catch(() => ({})),
         apiFetch(BASE + '/model/c_0120.cdi3.json', { cache: 'no-cache' }).catch(() => ({})),
@@ -2331,6 +2417,52 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     restoreProps()
     // 待机底层状态：平常脸 + 拿板子待着
     setBase('neutral', IDLE_PROPS)
+
+    // 初始化面向对象动力学与漫步系统
+    if (SpringPhysicsController && !springPhysics) {
+      springPhysics = new SpringPhysicsController(() => PRESS_PROFILE_DEFAULT)
+    }
+    if (FrameRateGovernor && !frameRateGovernor) {
+      frameRateGovernor = new FrameRateGovernor({
+        activeFps: 30,
+        idleFps: 15,
+        idleTimeoutMs: 12000,
+        onFpsChange: (fps) => {
+          if (app && app.ticker) app.ticker.maxFPS = fps
+        },
+      })
+    }
+    if (DesktopRoamEngine && !desktopRoamEngine) {
+      const r = ui.root.getBoundingClientRect()
+      desktopRoamEngine = new DesktopRoamEngine({
+        stageEl: ui.root,
+        initialX: r.left || 0,
+        initialY: r.top || 0,
+        modelGetter: () => model,
+        springController: springPhysics,
+        getCharacterAssets: () => CHARACTERS[activeCharacterId],
+        previewMotion: (file) => previewMotion(file),
+        resumeIdle: () => resumeCharacterIdleMotion(),
+        onWalkStart: () => reportBoundsToShell(),
+        onWalkEnd: () => {
+          resumeCharacterIdleMotion()
+          reportBoundsToShell()
+        },
+        onPositionChange: () => reportBoundsToShell(),
+      })
+      if (model) desktopRoamEngine.baseModelY = model.y
+      desktopRoamEngine.setRoaming(CFG.roamEnabled !== false)
+    }
+
+    if (DockAutoHideController && !dockAutoHide && ui.dock) {
+      dockAutoHide = new DockAutoHideController(ui.dock, { autoHideMs: 4000 })
+    }
+
+    app.ticker.add(() => {
+      const dt = Math.min(0.1, (app.ticker.deltaMS || 16.6) / 1000)
+      if (frameRateGovernor) frameRateGovernor.update()
+      if (desktopRoamEngine) desktopRoamEngine.update(dt)
+    })
 
     document.addEventListener('visibilitychange', () => {
       if (!app) return
@@ -2800,7 +2932,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     if (!r.width || !r.height) return false
     if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return false
     if (!mask.grid) return true
-    const mx = Math.floor(((clientX - r.left) / r.width) * mask.w)
+    const facing = (desktopRoamEngine && desktopRoamEngine.facing) || 1
+    const normX = facing === -1 ? (r.right - clientX) / r.width : (clientX - r.left) / r.width
+    const mx = Math.floor(normX * mask.w)
     const my = Math.floor(((clientY - r.top) / r.height) * mask.h)
     if (mx < 0 || my < 0 || mx >= mask.w || my >= mask.h) return false
     return mask.grid[my * mask.w + mx] === 1
@@ -3574,11 +3708,13 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     document.addEventListener(
       'pointermove',
       (e) => {
+        if (frameRateGovernor) frameRateGovernor.touch()
         if (!dragging) {
           // 主人反馈：「我鼠标往下走要去点那三个键，一离开她身上它们就消失了，点不着」。
           // 原因：原来只认 hitTest（她模型身上），而工具栏在她**下方**、不在模型掩码里。
           // 现在把「鼠标在工具栏矩形内」也算作悬停，并且离开后多留 900ms。
           const on = hitTest(e.clientX, e.clientY) || overDock(e.clientX, e.clientY)
+          if (dockAutoHide && overDock(e.clientX, e.clientY)) dockAutoHide.touch()
           if (on) {
             root.classList.add('dshp-hover')
             if (leaveTimer) {
@@ -3630,6 +3766,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         e.preventDefault()
         dragging = true
         dragMoved = false
+        if (springPhysics) springPhysics.press()
+        if (dockAutoHide) dockAutoHide.show()
+        if (frameRateGovernor) frameRateGovernor.touch()
         delete root.dataset.edge // 一拖就离开墙，别再显示「贴着左边」
         const r = root.getBoundingClientRect()
         start = { mx: e.clientX, my: e.clientY, left: r.left, top: r.top }
@@ -3640,15 +3779,23 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     document.addEventListener(
       'pointerup',
       (e) => {
+        if (springPhysics) springPhysics.release()
+        if (frameRateGovernor) frameRateGovernor.touch()
         if (!dragging) return
         dragging = false
         if (dragMoved) {
+          if (desktopRoamEngine) {
+            const r = root.getBoundingClientRect()
+            desktopRoamEngine.setAnchor(r.left, r.top)
+          }
+          reportBoundsToShell()
           // 松手：先看要不要贴边吸附，没吸附上再走自由惯性
           if (!snapOnRelease()) dragInertia(drag.vx, drag.vy)
           drag.vx = 0
           drag.vy = 0
         } else {
           poke(e.clientX, e.clientY)
+          if (dockAutoHide) dockAutoHide.show()
         }
         start = null
       },
@@ -3656,6 +3803,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     )
 
     document.addEventListener('pointercancel', () => {
+      if (springPhysics) springPhysics.release()
       dragging = false
       start = null
     })
@@ -6420,10 +6568,33 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     resetAll.addEventListener('click', () => {
       resetEverything()
       renderPane('setting')
-      ui.bubble.show('回到平常状态啦', { name: 'DS 鲸鱼娘', ttl: 2200 })
+      ui.bubble.show('回到平常状态啦', { name: activeCharInfo().name, ttl: 2200 })
     })
     row0.appendChild(resetAll)
     box.append(hostRow, hostHint, themeRow, row0)
+
+    // 🐾 桌面自由漫步与一键召回
+    const roamRow = $('div', 'dshp-row')
+    const roamBtn = $('button', 'dshp-btn', CFG.roamEnabled !== false ? '🐾 桌面漫步：开' : '🐾 桌面漫步：关')
+    roamBtn.title = '开启后桌宠将在空闲时在屏幕桌面间自由漫步'
+    roamBtn.addEventListener('click', () => {
+      CFG.roamEnabled = CFG.roamEnabled === false ? true : false
+      persistCfg()
+      if (desktopRoamEngine) desktopRoamEngine.setRoaming(CFG.roamEnabled)
+      roamBtn.textContent = CFG.roamEnabled ? '🐾 桌面漫步：开' : '🐾 桌面漫步：关'
+      ui.bubble.show(CFG.roamEnabled ? '我可以自由溜达啦！' : '好，我乖乖待在原地～', { name: activeCharInfo().name, ttl: 2000 })
+    })
+
+    const recallBtn = $('button', 'dshp-btn', '📍 一键召回')
+    recallBtn.title = '让桌宠立刻走回主人放置的锚点位置'
+    recallBtn.addEventListener('click', () => {
+      if (desktopRoamEngine) {
+        desktopRoamEngine.returnToAnchor()
+        ui.bubble.show('我回来啦～', { name: activeCharInfo().name, ttl: 2000 })
+      }
+    })
+    roamRow.append(roamBtn, recallBtn)
+    box.append(roamRow)
 
     const row2 = $('div', 'dshp-row')
     const reset = $('button', 'dshp-btn', '回到角落')
@@ -6447,10 +6618,18 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
       const quitApp = $('button', 'dshp-btn', '彻底关闭桌宠应用')
       quitApp.addEventListener('click', () => {
-        ui.bubble.show('人家先退下了，想叫我就去「应用程序」里双击我～', { name: 'DS 鲸鱼娘', ttl: 2000 })
+        ui.bubble.show('人家先退下了，想叫我就去「应用程序」里双击我～', { name: activeCharInfo().name, ttl: 2000 })
         setTimeout(() => shell.post('quit'), 220)
       })
-      row3.append(toBall, quitApp)
+      const fsBtn = $('button', 'dshp-btn', '🖥️ 住进桌面 (全屏活动)')
+      fsBtn.title = '窗口覆盖整个屏幕，空白处点击完全穿透，拥有超大漫步空间'
+      fsBtn.addEventListener('click', () => {
+        if (window.dshpetBridge && window.dshpetBridge.setFullscreenPrimary) {
+          window.dshpetBridge.setFullscreenPrimary(true)
+          ui.bubble.show('已为您配置桌面全屏漫步，重启桌面版壳子生效～', { name: activeCharInfo().name, ttl: 2600 })
+        }
+      })
+      row3.append(toBall, fsBtn, quitApp)
       box.append(row3)
     }
     box.append(
@@ -6930,6 +7109,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   }
 
   function startLoops() {
+    // 定期向桌面壳同步包围盒用于高效零开销排除
+    setInterval(reportBoundsToShell, 1000)
+
     // 视线/自主动作：40ms 一跳（对应 clawd-on-desk 的 50ms 轮询）
     setInterval(gazeTick, 40)
 

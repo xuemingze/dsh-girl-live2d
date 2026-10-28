@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('dshpetBridge', {
   reload: () => ipcRenderer.send('reload'),
   ballMove: (dx, dy) => ipcRenderer.send('ball-move', dx, dy),
   ballDrop: (moved) => ipcRenderer.send('ball-drop', moved),
+  syncBounds: (bounds) => ipcRenderer.send('sync-bounds', bounds),
+  setFullscreenPrimary: (val) => ipcRenderer.send('set-fullscreen-primary', !!val),
 })
 
 // 拖动：页面里按下她 → 告诉主进程搬窗口（主进程只在鼠标确实压在她身上时才搬，
