@@ -221,6 +221,29 @@ function setFullscreenPrimary(val) {
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, JSON.stringify(cur, null, 2))
     FULLSCREEN_PRIMARY = !!val
+
+    if (win && !win.isDestroyed()) {
+      if (FULLSCREEN_PRIMARY) {
+        const waFs = screen.getPrimaryDisplay().workArea
+        win.setResizable(true)
+        win.setBounds({ x: waFs.x, y: waFs.y, width: waFs.width, height: waFs.height })
+        win.setResizable(false)
+        bootLog('动态切换为「住进桌面」（全屏透明漫步模式）')
+      } else {
+        const wa = screen.getPrimaryDisplay().workArea
+        const saved = readPos()
+        win.setResizable(true)
+        win.setBounds({
+          x: saved ? saved[0] : wa.x + wa.width - WIN_W - 8,
+          y: saved ? saved[1] : wa.y + wa.height - WIN_H - 8,
+          width: WIN_W,
+          height: WIN_H
+        })
+        win.setResizable(false)
+        bootLog('动态切换为「局限小窗模式」（560x900）')
+      }
+      win.webContents.executeJavaScript('window.DSHPet && DSHPet.setFullscreenPrimary && DSHPet.setFullscreenPrimary(' + FULLSCREEN_PRIMARY + ')').catch(() => {})
+    }
   } catch (e) {}
 }
 
@@ -265,6 +288,7 @@ function createMain() {
     failCount = 0
     win.webContents.executeJavaScript('window.DSHPet && DSHPet.setLowPower && DSHPet.setLowPower(' + lowPower + ')')
     win.webContents.executeJavaScript("window.DSHPet && DSHPet.setHostPref && DSHPet.setHostPref('" + hostPref() + "')").catch(() => {}).catch(() => {})
+    win.webContents.executeJavaScript("window.DSHPet && DSHPet.setFullscreenPrimary && DSHPet.setFullscreenPrimary(" + FULLSCREEN_PRIMARY + ")").catch(() => {})
     setTimeout(() => win.webContents.executeJavaScript('window.DSHPet && DSHPet.setHidden && DSHPet.setHidden(false)').catch(() => {}), 1200)
     setTimeout(() => win.webContents.executeJavaScript('window.DSHPet && DSHPet.setHidden && DSHPet.setHidden(false)').catch(() => {}), 3000)
   })
@@ -332,6 +356,9 @@ function createMain() {
   ipcMain.on('set-fullscreen-primary', (_e, val) => {
     setFullscreenPrimary(val)
   })
+  ipcMain.handle('get-fullscreen-primary', () => {
+    return FULLSCREEN_PRIMARY
+  })
   // 前端那个 ↗ 符号：用默认浏览器打开 DSH 界面
   ipcMain.on('install-plugin', () => installPlugin())
   // 前端（pet.js）发来的指令，和 macOS 版一一对应。
@@ -353,6 +380,12 @@ function createMain() {
         setHostPref(msg.slice(5))
         bootLog('连接档位切成 ' + msg.slice(5) + ' → 重新发现宿主')
         load()
+        break
+      case 'fullscreen:on':
+        setFullscreenPrimary(true)
+        break
+      case 'fullscreen:off':
+        setFullscreenPrimary(false)
         break
       case 'open-dsh':
         shell.openExternal(petBase + '/')

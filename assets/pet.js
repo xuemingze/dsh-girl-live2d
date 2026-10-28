@@ -45,6 +45,7 @@
       bubbleTtlMs: 0,
       maxWidthRatio: 0.5,
       roamEnabled: true,
+      fullscreenPrimary: true,
     },
     BOOT.config || {},
   )
@@ -6575,6 +6576,55 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     row0.appendChild(resetAll)
     box.append(hostRow, hostHint, themeRow, row0)
 
+    // 🖥️ 活动空间模式：住进整个桌面（全屏透明漫步） vs 局限固定小窗 (560x900)
+    const spaceRow = $('div', 'dshp-row')
+    const spaceHint = $('div', 'dshp-hint', '')
+
+    const spaceBtns = [
+      [true, '🌟 住进桌面 (全屏活动)'],
+      [false, '🪟 局限小窗 (560×900)'],
+    ].map(([isFs, label]) => {
+      const b = $('button', 'dshp-btn', label)
+      b.addEventListener('click', () => {
+        for (const [, x] of spaceBtns) x.classList.remove('dshp-primary')
+        b.classList.add('dshp-primary')
+        CFG.fullscreenPrimary = isFs
+        saveLayout({ fullscreenPrimary: isFs })
+
+        if (window.dshpetBridge && typeof window.dshpetBridge.setFullscreenPrimary === 'function') {
+          window.dshpetBridge.setFullscreenPrimary(isFs)
+        }
+        if (shell.on) {
+          shell.post(isFs ? 'fullscreen:on' : 'fullscreen:off')
+        }
+        updateSpaceHint(isFs)
+        ui.bubble.show(
+          isFs
+            ? '已切换为「住进桌面」全屏模式！拥有超大自由漫步空间～'
+            : '已切换为「局限小窗」模式（560×900）～',
+          { name: activeCharInfo().name, ttl: 2600 },
+        )
+      })
+      return [isFs, b]
+    })
+
+    function updateSpaceHint(isFs) {
+      spaceHint.textContent = isFs
+        ? '当前：住进整个桌面 · 窗口铺满主屏幕，空白处完全透明穿透，漫步不受小窗限制'
+        : '当前：局限固定小窗 · 活动范围限制在 560×900 区域内'
+    }
+
+    const curFs = CFG.fullscreenPrimary !== false
+    for (const [isFs, b] of spaceBtns) b.classList.toggle('dshp-primary', isFs === curFs)
+    updateSpaceHint(curFs)
+    spaceRow.append(...spaceBtns.map(([, b]) => b))
+
+    window.__dshpSetFullscreenPrimary = (isFs) => {
+      CFG.fullscreenPrimary = !!isFs
+      for (const [val, b] of spaceBtns) b.classList.toggle('dshp-primary', val === !!isFs)
+      updateSpaceHint(!!isFs)
+    }
+
     // 🐾 桌面自由漫步与一键召回
     const roamRow = $('div', 'dshp-row')
     const roamBtn = $('button', 'dshp-btn', CFG.roamEnabled !== false ? '🐾 桌面漫步：开' : '🐾 桌面漫步：关')
@@ -6598,7 +6648,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
     })
     roamRow.append(roamBtn, recallBtn)
-    box.append(roamRow)
+    box.append(spaceRow, spaceHint, roamRow)
 
     const row2 = $('div', 'dshp-row')
     const reset = $('button', 'dshp-btn', '回到角落')
@@ -6625,15 +6675,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         ui.bubble.show('人家先退下了，想叫我就去「应用程序」里双击我～', { name: activeCharInfo().name, ttl: 2000 })
         setTimeout(() => shell.post('quit'), 220)
       })
-      const fsBtn = $('button', 'dshp-btn', '🖥️ 住进桌面 (全屏活动)')
-      fsBtn.title = '窗口覆盖整个屏幕，空白处点击完全穿透，拥有超大漫步空间'
-      fsBtn.addEventListener('click', () => {
-        if (window.dshpetBridge && window.dshpetBridge.setFullscreenPrimary) {
-          window.dshpetBridge.setFullscreenPrimary(true)
-          ui.bubble.show('已为您配置桌面全屏漫步，重启桌面版壳子生效～', { name: activeCharInfo().name, ttl: 2600 })
-        }
-      })
-      row3.append(toBall, fsBtn, quitApp)
+      row3.append(toBall, quitApp)
       box.append(row3)
     }
     box.append(
@@ -7181,6 +7223,13 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     setHostPref: (v) => {
       try {
         if (window.__dshpSetHostPref) window.__dshpSetHostPref(v)
+      } catch (err) {}
+    },
+    setFullscreenPrimary: (v) => {
+      try {
+        CFG.fullscreenPrimary = !!v
+        saveLayout({ fullscreenPrimary: !!v })
+        if (window.__dshpSetFullscreenPrimary) window.__dshpSetFullscreenPrimary(!!v)
       } catch (err) {}
     },
     /** 推一条工作简报（头顶出现信封，点开是大号面板） */
