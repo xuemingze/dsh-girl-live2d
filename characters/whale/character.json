@@ -7,11 +7,11 @@
   "fitMode": "full",
   "voice": {
     "voice_name": "zh-CN-XiaoyiNeural",
-    "prompt": "萝莉音，奶音",
+    "prompt": "萝莉音",
     "rate": "+0%",
     "pitch": "+0Hz",
-    "referenceAudio": "voice_engine/voices_pool/tianmei_shaonv.wav",
-    "referenceText": "主人，有什么我可以帮你的吗？",
+    "referenceAudio": "voice_engine/voices_pool/萝莉音.wav",
+    "referenceText": "萝莉音",
     "engine": "edge-tts"
   },
   "persona": {

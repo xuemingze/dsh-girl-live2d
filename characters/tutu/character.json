@@ -13,9 +13,9 @@
     "voice_name": "zh-CN-XiaoyiNeural",
     "prompt": "萝莉音",
     "rate": "+0%",
-    "pitch": "+6Hz",
+    "pitch": "+0Hz",
     "referenceAudio": "voice_engine/voices_pool/tianmei_shaonv.wav",
-    "referenceText": "嗯~~",
+    "referenceText": "tianmei_shaonv",
     "engine": "edge-tts"
   },
   "persona": {

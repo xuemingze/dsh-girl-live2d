@@ -41,6 +41,7 @@
       talkMouth: true,
       sound: true,
       ttsVolume: 1.0,
+      tapVoice: true,
       sleepAfterMs: 180000,
       bubbleTtlMs: 0,
       maxWidthRatio: 0.5,
@@ -314,47 +315,55 @@
       const fetchHeaders = {}
       if (DESK_TOKEN) fetchHeaders['x-dsh-pet-desk'] = DESK_TOKEN
 
-      // 智能解析文件名，建立多候选加载路径
-      let fileName = ''
-      if (typeof url === 'string') {
-        const clean = url.split('?')[0].split('#')[0]
-        if (clean.includes('/voices_pool/')) {
-          fileName = clean.split('/voices_pool/').pop()
-        } else if (clean.includes('voices_pool/')) {
-          fileName = clean.split('voices_pool/').pop()
-        } else if (!clean.includes('/')) {
-          fileName = clean
-        }
-      }
-      try { fileName = decodeURIComponent(fileName) } catch (e) {}
-
-      const candidateUrls = []
-      if (fileName) {
-        // 优先直连 9880 独立 TTS 服务端口（绝对无主应用路由拦截、原生支持跨域音频流）
-        candidateUrls.push('http://127.0.0.1:9880/voices_pool/' + encodeURIComponent(fileName))
-        candidateUrls.push('/dsh-pet/voices_pool/' + encodeURIComponent(fileName))
-        candidateUrls.push('/dsh-pet/voices_pool/' + fileName)
-      }
-      if (typeof url === 'string' && !candidateUrls.includes(url)) {
-        candidateUrls.push(url)
-      }
-
-      for (const curUrl of candidateUrls) {
-        try {
-          const is9880 = curUrl.includes(':9880')
-          const opt = is9880 ? { mode: 'cors' } : { headers: fetchHeaders, credentials: 'include' }
-          const resp = await fetch(curUrl, opt)
-          if (resp.ok) {
-            const ct = (resp.headers.get('content-type') || '').toLowerCase()
-            if (ct.includes('application/json') || ct.includes('text/html')) continue
-            const ab = await resp.arrayBuffer()
-            if (ab && ab.byteLength > 200) {
-              arrayBuffer = ab
-              blob = new Blob([ab], { type: 'audio/wav' })
-              break
-            }
+      if (url instanceof ArrayBuffer) {
+        arrayBuffer = url
+        blob = new Blob([arrayBuffer], { type: 'audio/wav' })
+      } else if (typeof Blob !== 'undefined' && url instanceof Blob) {
+        blob = url
+        arrayBuffer = await blob.arrayBuffer()
+      } else {
+        // 智能解析文件名，建立多候选加载路径
+        let fileName = ''
+        if (typeof url === 'string') {
+          const clean = url.split('?')[0].split('#')[0]
+          if (clean.includes('/voices_pool/')) {
+            fileName = clean.split('/voices_pool/').pop()
+          } else if (clean.includes('voices_pool/')) {
+            fileName = clean.split('voices_pool/').pop()
+          } else if (!clean.includes('/')) {
+            fileName = clean
           }
-        } catch (e) {}
+        }
+        try { fileName = decodeURIComponent(fileName) } catch (e) {}
+
+        const candidateUrls = []
+        if (fileName) {
+          // 优先直连 9880 独立 TTS 服务端口（绝对无主应用路由拦截、原生支持跨域音频流）
+          candidateUrls.push('http://127.0.0.1:9880/voices_pool/' + encodeURIComponent(fileName))
+          candidateUrls.push('/dsh-pet/voices_pool/' + encodeURIComponent(fileName))
+          candidateUrls.push('/dsh-pet/voices_pool/' + fileName)
+        }
+        if (typeof url === 'string' && !candidateUrls.includes(url)) {
+          candidateUrls.push(url)
+        }
+
+        for (const curUrl of candidateUrls) {
+          try {
+            const is9880 = curUrl.includes(':9880')
+            const opt = is9880 ? { mode: 'cors' } : { headers: fetchHeaders, credentials: 'include' }
+            const resp = await fetch(curUrl, opt)
+            if (resp.ok) {
+              const ct = (resp.headers.get('content-type') || '').toLowerCase()
+              if (ct.includes('application/json') || ct.includes('text/html')) continue
+              const ab = await resp.arrayBuffer()
+              if (ab && ab.byteLength > 200) {
+                arrayBuffer = ab
+                blob = new Blob([ab], { type: 'audio/wav' })
+                break
+              }
+            }
+          } catch (e) {}
+        }
       }
 
       if (!arrayBuffer || arrayBuffer.byteLength === 0) {
@@ -453,6 +462,37 @@
     } catch (e) {
       isSpeakingAudio = false
       console.warn('[桌宠语音] playAudioWithLipSync 异常:', e)
+    }
+  }
+
+  /**
+   * 伴随动作点击的专属角色 TTS 实时合成与播报（自动携带当前角色专属声线）
+   */
+  async function speakCharacterText(text, charId = activeCharacterId) {
+    if (!text || !CFG.sound || CFG.tapVoice === false) return
+    const char = CHARACTERS[charId] || {}
+    const charVoice = char.voice || {}
+    try {
+      const resp = await fetch('http://127.0.0.1:9880/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: text,
+          characterId: charId,
+          voice: charVoice.voice_name || charVoice.voice,
+          prompt: charVoice.prompt,
+          rate: charVoice.rate,
+          pitch: charVoice.pitch,
+        }),
+      })
+      if (resp.ok) {
+        const ab = await resp.arrayBuffer()
+        if (ab && ab.byteLength > 200) {
+          await playAudioWithLipSync(ab, { force: true })
+        }
+      }
+    } catch (e) {
+      console.warn('[桌宠语音] speakCharacterText 异常:', e)
     }
   }
 
@@ -4335,79 +4375,383 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     },
   ]
 
+  // ==========================================
+  // 八、面向对象点击互动体系 (OOP Tap Engine)
+  // ==========================================
+
+  /**
+   * 动作标志语解析工具：剥离标志语提取语音口播纯文本，同时推断表情特效
+   */
+  class ActionCueParser {
+    static extractSpeechText(raw) {
+      if (!raw || typeof raw !== 'string') return ''
+      let t = raw
+        .replace(/（[^）]*）/g, '')
+        .replace(/\([^)]*\)/g, '')
+        .replace(/【[^】]*】/g, '')
+        .replace(/\[[^\]]*\]/g, '')
+        .replace(/\*[^*]*\*/g, '')
+        .trim()
+      t = t.replace(/^[！!？?,，。.~～\s]+/, '').trim()
+      return t
+    }
+
+    static parse(raw) {
+      const speech = this.extractSpeechText(raw)
+      const cues = []
+      const re = /[（(【\[*](.*?)[）)】\]*]/g
+      let m
+      while ((m = re.exec(raw)) !== null) {
+        if (m[1] && m[1].trim()) cues.push(m[1].trim())
+      }
+      let mood = null
+      let heart = false
+      const allCues = cues.join(' ')
+      if (/脸红|害羞|羞/.test(allCues)) mood = 'shy'
+      else if (/爱心|喜欢|心跳/.test(allCues)) { mood = 'love'; heart = true }
+      else if (/笑|嘿嘿|嘻嘻|高兴/.test(allCues)) mood = 'happy'
+      else if (/炸毛|生气|哼|噘嘴|撅嘴|气/.test(allCues)) mood = 'grumpy'
+      else if (/傲娇|眯眼|得意/.test(allCues)) mood = 'smug'
+      else if (/哭|眼泪|呜/.test(allCues)) mood = 'cry'
+      else if (/躲|跑|闪|跳|缩/.test(allCues)) mood = 'playful'
+      else if (/愣|诶|问号|歪头|疑惑/.test(allCues)) mood = 'confused'
+      else if (/惊|吓/.test(allCues)) mood = 'alert'
+      else if (/困|哈欠|睡/.test(allCues)) mood = 'sleepy'
+
+      return {
+        raw,
+        bubbleText: raw,
+        speechText: speech,
+        cues,
+        mood,
+        heart,
+      }
+    }
+  }
+
+  /**
+   * 父类 / 标准基准对象：WhaleStandardTapProfile (鲸鱼娘标准原型，只读保护)
+   * 封装核心算法：区域检测、连点手速分级、动作标志语分离、气泡动作演出与 TTS 播报
+   */
+  class WhaleStandardTapProfile {
+    constructor(characterId = 'whale', charName = '深海鲸鱼娘') {
+      this.characterId = characterId
+      this.charName = charName
+      this.isReadonlyStandard = true
+    }
+
+    getStorageKey() {
+      return 'dshp_custom_tap_lines_' + this.characterId
+    }
+
+    loadCustomLines() {
+      try {
+        const s = localStorage.getItem(this.getStorageKey())
+        return s ? JSON.parse(s) : []
+      } catch (e) {
+        return []
+      }
+    }
+
+    saveCustomLines(lines) {
+      try {
+        localStorage.setItem(this.getStorageKey(), JSON.stringify(lines))
+      } catch (e) {}
+    }
+
+    addCustomLine(zone, text, mood) {
+      const list = this.loadCustomLines()
+      const item = {
+        id: 'cust_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        zone: zone || 'head',
+        text: text.trim(),
+        mood: mood || null,
+        custom: true,
+      }
+      list.unshift(item)
+      this.saveCustomLines(list)
+      return item
+    }
+
+    deleteCustomLine(id) {
+      let list = this.loadCustomLines()
+      list = list.filter((x) => x.id !== id)
+      this.saveCustomLines(list)
+      return list
+    }
+
+    // 鲸鱼娘 8 条标准代表作（作为标准对象封存保护）
+    getDefaultLines() {
+      return [
+        { zone: 'head', text: '（脸红）不要突然摸头啦……再摸一下也不是不行。', mood: 'shy', fx: 'heart' },
+        { zone: 'head', text: '（眯眼）主人手法还不错嘛，再左边一点…对，就是那里~', mood: 'smug' },
+        { zone: 'head', text: '（冒爱心）最喜欢主人了！要是再来碗白饭就更完美了。', mood: 'love', fx: 'heart' },
+        { zone: 'body', text: '喂！别戳人家啦，本鲸也是有尊严的！', mood: 'pout' },
+        { zone: 'body', text: '（扭来扭去躲）好痒…哈哈哈！住手啦主人~', mood: 'playful' },
+        { zone: 'body', text: '（用本子挡住）不给戳！戳一下换一粒白米，成交吗？', mood: 'playful' },
+        { zone: 'body', text: '（躲到角落）喂喂喂，手速这么快，人家要抗议了哦！', mood: 'alert' },
+        { zone: 'body', text: '（炸毛）够啦够啦！再戳人家真的要咬你了哦！', mood: 'grumpy' },
+      ]
+    }
+
+    getAllLines() {
+      return [...this.getDefaultLines(), ...this.loadCustomLines()]
+    }
+
+    // 演练或触发某一条台词
+    triggerLine(item) {
+      const parsed = ActionCueParser.parse(item.text)
+      const mood = item.mood || parsed.mood || 'happy'
+      const ms = 2600
+
+      act({
+        mood: mood,
+        line: parsed.bubbleText,
+        heart: item.fx === 'heart' || parsed.heart,
+        ms: ms,
+      })
+
+      if (CFG.tapVoice !== false && parsed.speechText) {
+        speakCharacterText(parsed.speechText, this.characterId)
+      }
+    }
+
+    // 核心点击处理逻辑（由桌宠收到点击时委托调用）
+    handlePoke(clientX, clientY, agentStatus) {
+      if (agentStatus !== 'idle') {
+        closePanels()
+        qBounce(1)
+        gazeDetach(1800)
+        gaze.biasTarget = 0
+        const busyHit = pickFresh(POKE_BUSY, 'busy')
+        const rawLine = pickFresh(busyHit.lines, 'busy-line-' + busyHit.mood)
+        const parsed = ActionCueParser.parse(rawLine)
+        act({ mood: busyHit.mood, line: parsed.bubbleText, ms: 2200 })
+        if (CFG.tapVoice !== false && parsed.speechText) {
+          speakCharacterText(parsed.speechText, this.characterId)
+        }
+        return
+      }
+
+      const now = performance.now()
+      pokeRecord(now)
+      const tier = pokeTier(now)
+
+      closePanels()
+      wakeUp()
+      qBounce(tier.furious ? 1.35 : tier.rapid ? 1.15 : 1)
+      gazeDetach(2200)
+
+      if (tier.furious) {
+        pokeState.angerAt = now
+        const face = pick(['grumpy', 'grumpy', 'alert', 'pout'])
+        const line = pickFresh(SAY.many, 'many')
+        const parsed = ActionCueParser.parse(line)
+        act({ mood: face, props: IDLE_PROPS, line: parsed.bubbleText, ms: 2600 })
+        if (CFG.tapVoice !== false && parsed.speechText) {
+          speakCharacterText(parsed.speechText, this.characterId)
+        }
+        return
+      }
+
+      if (tier.rapid && now - pokeState.softAt > POKE_TIER.softCool) {
+        pokeState.softAt = now
+        const face = pick(['pout', 'shy', 'tongue', 'alert'])
+        const line = pickFresh(SAY.ticklish, 'ticklish')
+        const parsed = ActionCueParser.parse(line)
+        act({ mood: face, props: IDLE_PROPS, line: parsed.bubbleText, ms: 2400 })
+        if (CFG.tapVoice !== false && parsed.speechText) {
+          speakCharacterText(parsed.speechText, this.characterId)
+        }
+        return
+      }
+
+      // 鲸鱼娘保留 12% 概率喷水动作
+      if (this.characterId === 'whale' && Math.random() < 0.12) {
+        playAction('splash')
+        return
+      }
+
+      // 区分摸头还是戳身子
+      const r = ui.stage.getBoundingClientRect()
+      const isHead = (clientY - r.top) / Math.max(1, r.height) < 0.45
+      const zone = isHead ? 'head' : 'body'
+
+      // 获取当前角色可用词条（自定义词条与默认词条联合抽取）
+      const pool = this.getAllLines().filter((x) => x.zone === zone)
+      let selected = null
+      if (pool.length > 0) {
+        selected = pickFresh(pool, `${this.characterId}-${zone}`)
+      }
+      if (!selected) {
+        const fallbackList = isHead ? POKE_HEAD : POKE_BODY
+        const hit = pickFresh(fallbackList, zone)
+        selected = {
+          text: pickFresh(hit.lines, 'line-' + hit.mood),
+          mood: hit.mood,
+          fx: hit.fx,
+        }
+      }
+
+      this.triggerLine(selected)
+    }
+  }
+
+  /**
+   * 兔兔子类 (TutuTapProfile - 娇羞灵动兔耳娘风格)
+   */
+  class TutuTapProfile extends WhaleStandardTapProfile {
+    constructor() {
+      super('tutu', '兔兔')
+      this.isReadonlyStandard = false
+    }
+
+    getDefaultLines() {
+      return [
+        { zone: 'head', text: '（兔耳朵竖起）呀！主人摸得人家耳朵根好痒呀~', mood: 'shy', fx: 'heart' },
+        { zone: 'head', text: '（眯眼蹭蹭）主人的手心好暖和，像晒太阳一样舒服呢。', mood: 'happy' },
+        { zone: 'head', text: '（抱住长耳朵）别、别一直揉耳朵啦，等会儿都要揉红了…', mood: 'shy' },
+        { zone: 'body', text: '（轻快地跳开）嘻嘻，抓不到人家吧！兔兔可是跑得很快的~', mood: 'playful' },
+        { zone: 'body', text: '（鼓起腮帮子）戳人家肚肚干嘛，里面可没有藏胡萝卜！', mood: 'pout' },
+        { zone: 'body', text: '（两手护在胸前）唔…主人今天怎么总爱捉弄兔兔呀？', mood: 'confused' },
+        { zone: 'body', text: '（尾巴紧张地抖了抖）呜哇！点太快啦，兔兔的小心脏要跳出来了！', mood: 'alert' },
+        { zone: 'body', text: '（急得跺脚）不理主人了啦！除非拿甜甜的草莓来哄兔兔！', mood: 'grumpy' },
+      ]
+    }
+  }
+
+  /**
+   * 西域舞女 / 玉玉子类 (YuyuTapProfile - 神秘优雅异域御姐风格)
+   */
+  class YuyuTapProfile extends WhaleStandardTapProfile {
+    constructor() {
+      super('yuyu', '玉玉')
+      this.isReadonlyStandard = false
+    }
+
+    getDefaultLines() {
+      return [
+        { zone: 'head', text: '（轻摇金铃）主人的手，可真是越来越不老实了呢~', mood: 'smug', fx: 'heart' },
+        { zone: 'head', text: '（低眉含笑）若想抚摸妾身的青丝，可得先为妾身倒一杯葡萄美酒哦。', mood: 'happy' },
+        { zone: 'head', text: '（偏头凝视）怎么，看妾身看得出神了么？', mood: 'shy' },
+        { zone: 'body', text: '（挽起水袖轻旋）别闹，这身西域轻纱可经不住主人这般戳弄~', mood: 'playful' },
+        { zone: 'body', text: '（掩嘴轻笑）咯咯…主人若是闲得无聊，不如看妾身为您跳支胡旋舞？', mood: 'happy' },
+        { zone: 'body', text: '（指尖轻点薄纱）想要触碰妾身，可没有那么容易呢。', mood: 'smug' },
+        { zone: 'body', text: '（灵巧闪身）步法这般急躁，在西域可是会踏错舞步的哟。', mood: 'alert' },
+        { zone: 'body', text: '（杏眼微嗔）再这般放肆地乱点，妾身可要用金铃红绫将您绑起来了~', mood: 'grumpy' },
+      ]
+    }
+  }
+
+  /**
+   * 小小 / 冰冰龙子类 (XiaoxiaoTapProfile - 呆萌幼态治愈小龙女风格)
+   */
+  class XiaoxiaoTapProfile extends WhaleStandardTapProfile {
+    constructor() {
+      super('xiaoxiao', '小小')
+      this.isReadonlyStandard = false
+    }
+
+    getDefaultLines() {
+      return [
+        { zone: 'head', text: '（晃了晃小龙角）嗷呜~ 摸摸龙角会带来好运气的哦！', mood: 'excited', fx: 'heart' },
+        { zone: 'head', text: '（舒服地眯起眼睛）呼噜噜…主人的摸摸最舒服了，小小还要！', mood: 'happy' },
+        { zone: 'head', text: '（抱住小脑袋）唔…头发乱蓬蓬的了，主人要负责帮小小梳好！', mood: 'pout' },
+        { zone: 'body', text: '（慌忙护住尾巴）呀！别拽小小的龙尾巴，那里很敏感的啦！', mood: 'alert' },
+        { zone: 'body', text: '（歪头眨巴眼睛）主人戳小小一下，小小也要戳主人一下，扯平啦！', mood: 'playful' },
+        { zone: 'body', text: '（打了个小哈欠）唔…小小刚睡醒呢，主人有带亮闪闪的宝石来吗？', mood: 'sleepy' },
+        { zone: 'body', text: '（抱着尾巴团成一团）哇啊！点得太急了，小小要被点晕倒啦！', mood: 'alert' },
+        { zone: 'body', text: '（张牙舞爪）超凶的嗷呜！小小可是巨龙，再戳小小就喷小火苗了哦！', mood: 'grumpy' },
+      ]
+    }
+  }
+
+  /**
+   * 可可 / 元气女仆子类 (KekeTapProfile - 贴心干练忠诚女仆风格)
+   */
+  class KekeTapProfile extends WhaleStandardTapProfile {
+    constructor() {
+      super('keke', '可可')
+      this.isReadonlyStandard = false
+    }
+
+    getDefaultLines() {
+      return [
+        { zone: 'head', text: '（提起女仆裙摆行礼）主人辛苦了，可可随时听候您的吩咐~', mood: 'happy', fx: 'heart' },
+        { zone: 'head', text: '（脸颊微微泛红）工作时间被主人摸头…女仆守则里可没有写这一条呢。', mood: 'shy' },
+        { zone: 'head', text: '（温柔微笑）只要能让主人感到放松，可可愿意一直陪在您身边。', mood: 'love', fx: 'heart' },
+        { zone: 'body', text: '（整理围裙带子）主人，请不要在工作时间捉弄女仆哦。', mood: 'pout' },
+        { zone: 'body', text: '（端出托盘）主人是不是口渴了？要为您泡一杯新鲜的大吉岭红茶吗？', mood: 'happy' },
+        { zone: 'body', text: '（挺直腰杆）可可是一流的女仆，这点小触碰是动摇不了可可的！', mood: 'smug' },
+        { zone: 'body', text: '（有些手忙脚乱）主、主人！红茶差点都要洒出来了啦！', mood: 'alert' },
+        { zone: 'body', text: '（无奈地叹了口气）真是拿主人没办法…再闹的话，今天晚餐就要取消甜点了哦！', mood: 'grumpy' },
+      ]
+    }
+  }
+
+  /**
+   * 通用自定义角色子类 (CustomCharacterTapProfile - 导入角色通用继承)
+   */
+  class CustomCharacterTapProfile extends WhaleStandardTapProfile {
+    constructor(charId, charName) {
+      super(charId, charName)
+      this.isReadonlyStandard = false
+    }
+
+    getDefaultLines() {
+      return [
+        { zone: 'head', text: `（轻轻歪头）主人，今天有什么任务交给${this.charName}吗？`, mood: 'happy' },
+        { zone: 'head', text: '（舒服地眯起眼睛）主人的手好温柔呀，很喜欢这种感觉~', mood: 'shy', fx: 'heart' },
+        { zone: 'head', text: '嘿嘿，被主人摸头感觉充满了力量呢！', mood: 'excited' },
+        { zone: 'body', text: '（轻轻躲闪）别戳啦，有点痒痒的呢~', mood: 'playful' },
+        { zone: 'body', text: '在的在的！一直都在主人身边陪着您呢。', mood: 'happy' },
+        { zone: 'body', text: '（捂住胸口）呀，突然点人家，吓了一跳呢！', mood: 'alert' },
+        { zone: 'body', text: '（转了个圈）点得这么快，主人今天心情看起来很不错嘛？', mood: 'playful' },
+        { zone: 'body', text: '（鼓起腮帮子）再一直戳的话，人家也是会小小地抗议一下的哦！', mood: 'pout' },
+      ]
+    }
+  }
+
+  /**
+   * 工厂单例注册表 (TapProfileRegistry)
+   */
+  class TapProfileRegistry {
+    static _instances = new Map()
+
+    static get(charId = activeCharacterId) {
+      if (!this._instances.has(charId)) {
+        let inst
+        switch (charId) {
+          case 'whale':
+            inst = new WhaleStandardTapProfile()
+            break
+          case 'tutu':
+            inst = new TutuTapProfile()
+            break
+          case 'yuyu':
+            inst = new YuyuTapProfile()
+            break
+          case 'xiaoxiao':
+            inst = new XiaoxiaoTapProfile()
+            break
+          case 'keke':
+            inst = new KekeTapProfile()
+            break
+          default:
+            const charName = (CHARACTERS[charId] && CHARACTERS[charId].name) || charId
+            inst = new CustomCharacterTapProfile(charId, charName)
+            break
+        }
+        this._instances.set(charId, inst)
+      }
+      return this._instances.get(charId)
+    }
+  }
+
   function poke(clientX, clientY) {
     if (ui.root.classList.contains('dshp-hidden')) return
-
-    // —— 干活时点她：也互动，但**不动底层状态** ——
-    // 反应是一次性的（两秒左右），过期后自动回到「正在做的那件事」，
-    // 所以既有了互动，又不会把工作状态搞乱。
-    if (agent.status !== 'idle') {
-      closePanels()
-      qBounce(1)
-      // 「点的时候她会看」：干活时被戳就抬头看鼠标（低头看本子的姿势也让开）
-      gazeDetach(1800)
-      gaze.biasTarget = 0
-      const busyHit = pickFresh(POKE_BUSY, 'busy')
-      act({
-        mood: busyHit.mood,
-        line: pickFresh(busyHit.lines, 'busy-line-' + busyHit.mood),
-        ms: 2200,
-      })
-      return
-    }
-
-    const now = performance.now()
-    pokeRecord(now)
-    const tier = pokeTier(now)
-
-    closePanels()
-    wakeUp()
-    qBounce(tier.furious ? 1.35 : tier.rapid ? 1.15 : 1)
-    gazeDetach(2200)
-
-    // —— 真炸毛：只有手速党才见得到，而且一次只出一条 ——
-    if (tier.furious) {
-      pokeState.angerAt = now
-      // 别每次都同一张脸：生气/警觉/嘟嘴里挑一个，台词也从扩过的池子里抽
-      const face = pick(['grumpy', 'grumpy', 'alert', 'pout'])
-      act({ mood: face, props: IDLE_PROPS, line: pickFresh(SAY.many, 'many'), ms: 2600 })
-      return
-    }
-
-    // —— 快但没到炸毛：被戳痒了，可爱地抗议，绝不跳进生气 ——
-    // 撒娇也有最小间隔，免得连点变成刷屏；间隔内的点击继续走下面的普通反应，
-    // 所以「手快」的体验是「她一直在躲」，而不是「她一直生气」。
-    if (tier.rapid && now - pokeState.softAt > POKE_TIER.softCool) {
-      pokeState.softAt = now
-      act({
-        mood: pick(['pout', 'shy', 'tongue', 'alert']),
-        props: IDLE_PROPS,
-        line: pickFresh(SAY.ticklish, 'ticklish'),
-        ms: 2400,
-      })
-      return
-    }
-
-    // 原作者把「鲸鱼喷水」这个动画绑在**左键点她**上（按键表：LeftMouseButton
-    // → 喷水.motion3.json）。所以戳她的时候偶尔真的喷一下水——照人家的设计来。
-    if (Math.random() < 0.12) {
-      playAction('splash')
-      return
-    }
-
-    const r = ui.stage.getBoundingClientRect()
-    const head = (clientY - r.top) / Math.max(1, r.height) < 0.45
-    const hit = pickFresh(head ? POKE_HEAD : POKE_BODY, head ? 'head' : 'body')
-    const ms = 2600
-
-    // 一次点击 = 一个表情 + 一句台词 +（至多）一个粒子特效。
-    // act() 会先把上一次整个停掉，所以点一下永远是干净的单次反应。
-    act({
-      mood: hit.mood,
-      line: pickFresh(hit.lines, 'line-' + hit.mood),
-      heart: hit.fx === 'heart',
-      ms,
-    })
+    const profile = TapProfileRegistry.get(activeCharacterId)
+    profile.handlePoke(clientX, clientY, agent.status)
   }
 
   // ——————————————————————————————————————————————————————————————
@@ -4940,6 +5284,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     const TABS = [
       ['character', '角色'],
       ['voice', '声音'],
+      ['click', '点击'],
       ['face', '表情'],
       ['decor', '装饰'],
       ['scene', '场景'],
@@ -6167,6 +6512,296 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       box.append(statusTitle, basicRow, volLabel, poolCard, genCard, localCard)
       panes.appendChild(box)
       loadVoicePool()
+      return
+    }
+
+    if (id === 'click') {
+      const clickBox = $('div', 'dshp-col')
+      clickBox.style.display = 'flex'
+      clickBox.style.flexDirection = 'column'
+      clickBox.style.gap = '8px'
+
+      const profile = TapProfileRegistry.get(activeCharacterId)
+      const isWhale = (activeCharacterId === 'whale')
+
+      // 1. 顶部状态与点击伴随语音开关
+      const topRow = $('div')
+      topRow.style.display = 'flex'
+      topRow.style.justifyContent = 'space-between'
+      topRow.style.alignItems = 'center'
+      topRow.style.background = 'rgba(255, 255, 255, 0.04)'
+      topRow.style.padding = '8px 10px'
+      topRow.style.borderRadius = '8px'
+      topRow.style.border = '1px solid rgba(255, 255, 255, 0.08)'
+
+      const roleBadge = $('div')
+      roleBadge.style.fontSize = '12px'
+      roleBadge.style.fontWeight = 'bold'
+      roleBadge.style.color = '#fff'
+      roleBadge.innerHTML = `当前伴侣：<span style="color:var(--dshp-accent);">${activeCharInfo().name}</span> ${isWhale ? '<span style="font-size:10px;padding:1px 5px;background:rgba(255,193,7,0.15);color:#ffc107;border-radius:4px;border:1px solid rgba(255,193,7,0.3);margin-left:4px;">🔒 鲸鱼娘 (标准基准对象)</span>' : ''}`
+
+      const voiceToggleBtn = $('button', 'dshp-btn' + (CFG.tapVoice !== false ? ' dshp-primary' : ''))
+      voiceToggleBtn.style.padding = '3px 8px'
+      voiceToggleBtn.style.fontSize = '11px'
+      voiceToggleBtn.textContent = CFG.tapVoice !== false ? '🔊 点击伴随语音: 开' : '🔇 点击伴随语音: 关'
+      voiceToggleBtn.title = '开启后，点击桌宠或点击演练时自动使用当前角色专属声线朗读台词（自动剥离标志语）'
+      voiceToggleBtn.addEventListener('click', () => {
+        CFG.tapVoice = !(CFG.tapVoice !== false)
+        persistCfg()
+        voiceToggleBtn.textContent = CFG.tapVoice ? '🔊 点击伴随语音: 开' : '🔇 点击伴随语音: 关'
+        voiceToggleBtn.className = 'dshp-btn' + (CFG.tapVoice ? ' dshp-primary' : '')
+        ui.bubble.show(CFG.tapVoice ? '已开启点击角色伴随语音！' : '已关闭点击语音，仅气泡展示', { duration: 2500 })
+      })
+      topRow.append(roleBadge, voiceToggleBtn)
+
+      // 2. 标志语机制重要说明条 (用户明确要求)
+      const tipBar = $('div')
+      tipBar.style.fontSize = '11px'
+      tipBar.style.padding = '6px 10px'
+      tipBar.style.borderRadius = '6px'
+      tipBar.style.background = 'rgba(114, 241, 184, 0.08)'
+      tipBar.style.border = '1px solid rgba(114, 241, 184, 0.25)'
+      tipBar.style.color = '#a3f7d2'
+      tipBar.style.lineHeight = '1.5'
+      tipBar.innerHTML = '💡 <b>动作标志语机制说明</b>：文本中 <code>（）</code> 内为<b>动作标志语</b>（如 <i>（脸红）</i>、<i>（晃龙角）</i>、<i>（轻摇金铃）</i>）。气泡中会完整呈现并联动动作表情，而<b>语音朗读时会自动省略括号中的动作标志语</b>，只口播纯人声台词！'
+
+      // 3. 手动输入自定义台词卡片
+      const inputCard = $('div', 'dshp-panel-card')
+      inputCard.style.padding = '8px 10px'
+      inputCard.style.background = 'rgba(255, 255, 255, 0.04)'
+      inputCard.style.borderRadius = '8px'
+      inputCard.style.border = '1px solid rgba(255, 255, 255, 0.08)'
+      inputCard.style.display = 'flex'
+      inputCard.style.flexDirection = 'column'
+      inputCard.style.gap = '6px'
+
+      const inputTitle = $('div', null, '✏️ 手动输入点击台词（支持括号动作标志语）：')
+      inputTitle.style.fontSize = '11.5px'
+      inputTitle.style.fontWeight = 'bold'
+      inputTitle.style.color = '#eee'
+
+      const textInput = document.createElement('textarea')
+      textInput.rows = 2
+      textInput.style.width = '100%'
+      textInput.style.boxSizing = 'border-box'
+      textInput.style.fontSize = '11px'
+      textInput.style.padding = '5px 8px'
+      textInput.style.borderRadius = '4px'
+      textInput.style.background = '#1b1b1b'
+      textInput.style.color = '#fff'
+      textInput.style.border = '1px solid #333'
+      textInput.style.resize = 'none'
+      textInput.placeholder = '例如：（害羞低头）主人，今天有什么任务交给人家吗？'
+
+      // 实时双轨预览条
+      const previewBox = $('div')
+      previewBox.style.fontSize = '10.5px'
+      previewBox.style.padding = '5px 8px'
+      previewBox.style.background = 'rgba(0, 0, 0, 0.25)'
+      previewBox.style.borderRadius = '4px'
+      previewBox.style.border = '1px dashed rgba(255, 255, 255, 0.15)'
+      previewBox.style.color = '#ccc'
+      previewBox.style.lineHeight = '1.45'
+
+      function updatePreview() {
+        const val = textInput.value.trim()
+        if (!val) {
+          previewBox.innerHTML = '<span style="color:#666;">💬 实时双轨预览：输入内容后，此处将直观分离气泡文本与朗读人声文本...</span>'
+          return
+        }
+        const p = ActionCueParser.parse(val)
+        previewBox.innerHTML = `💬 <b>气泡将显示</b>：<span style="color:#72f1b8;">${p.bubbleText}</span><br>🔊 <b>语音将朗读</b>：<span style="color:#7b9bff;">${p.speechText || '<i style="color:#888;">(纯动作描写，语音自动静默)</i>'}</span>`
+      }
+      updatePreview()
+      textInput.addEventListener('input', updatePreview)
+
+      // 归属部位与情绪联动选择
+      const optRow = $('div')
+      optRow.style.display = 'flex'
+      optRow.style.alignItems = 'center'
+      optRow.style.gap = '6px'
+      optRow.style.fontSize = '11px'
+      optRow.style.color = '#aaa'
+
+      const zoneSelect = document.createElement('select')
+      zoneSelect.style.fontSize = '11px'
+      zoneSelect.style.padding = '2px 4px'
+      zoneSelect.style.background = '#222'
+      zoneSelect.style.color = '#fff'
+      zoneSelect.style.borderRadius = '4px'
+      zoneSelect.style.border = '1px solid #444'
+      zoneSelect.innerHTML = '<option value="head">摸头 (Head)</option><option value="body">戳身子 (Body)</option>'
+
+      const moodSelect = document.createElement('select')
+      moodSelect.style.fontSize = '11px'
+      moodSelect.style.padding = '2px 4px'
+      moodSelect.style.background = '#222'
+      moodSelect.style.color = '#fff'
+      moodSelect.style.borderRadius = '4px'
+      moodSelect.style.border = '1px solid #444'
+      moodSelect.innerHTML = '<option value="">自动由标志语推断</option><option value="happy">开心 (happy)</option><option value="shy">害羞 (shy)</option><option value="love">心动 (love)</option><option value="smug">傲娇 (smug)</option><option value="pout">噘嘴 (pout)</option><option value="grumpy">生气 (grumpy)</option><option value="playful">闪躲 (playful)</option><option value="alert">警觉 (alert)</option><option value="confused">困惑 (confused)</option>'
+
+      optRow.append($('span', null, '触发部位:'), zoneSelect, $('span', null, '表情联动:'), moodSelect)
+
+      const actBtnRow = $('div')
+      actBtnRow.style.display = 'flex'
+      actBtnRow.style.gap = '6px'
+      actBtnRow.style.marginTop = '2px'
+
+      const testBtn = $('button', 'dshp-btn', '▶ 试听演练')
+      testBtn.style.flex = '1'
+      testBtn.style.padding = '4px'
+      testBtn.style.fontSize = '11px'
+      testBtn.title = '让桌宠立即演练此台词（气泡显示含标志语，语音自动省略标志语）'
+      testBtn.addEventListener('click', () => {
+        const val = textInput.value.trim() || (isWhale ? '（脸红）不要突然摸头啦……再摸一下也不是不行。' : '（轻轻歪头）主人，有什么吩咐交给人家吗？')
+        profile.triggerLine({
+          text: val,
+          mood: moodSelect.value || null,
+          zone: zoneSelect.value,
+        })
+      })
+
+      const addBtn = $('button', 'dshp-btn dshp-primary', '➕ 添加到当前伴侣词库')
+      addBtn.style.flex = '1.3'
+      addBtn.style.padding = '4px'
+      addBtn.style.fontSize = '11px'
+      addBtn.addEventListener('click', () => {
+        const val = textInput.value.trim()
+        if (!val) {
+          alert('请先输入台词内容哦~')
+          return
+        }
+        if (isWhale) {
+          if (!confirm('鲸鱼娘为系统标准基准对象，原版词库受保护。是否确认将其作为扩展台词追加？')) return
+        }
+        profile.addCustomLine(zoneSelect.value, val, moodSelect.value || null)
+        ui.bubble.show(`已成功为「${activeCharInfo().name}」添加点击台词！`, { duration: 2500 })
+        textInput.value = ''
+        updatePreview()
+        renderPane('click')
+      })
+
+      actBtnRow.append(testBtn, addBtn)
+      inputCard.append(inputTitle, textInput, previewBox, optRow, actBtnRow)
+
+      // 4. 台词列表卡片
+      const listCard = $('div')
+      listCard.style.display = 'flex'
+      listCard.style.flexDirection = 'column'
+      listCard.style.gap = '6px'
+
+      const listHeader = $('div')
+      listHeader.style.display = 'flex'
+      listHeader.style.justifyContent = 'space-between'
+      listHeader.style.alignItems = 'center'
+
+      const listTitle = $('div', null, `📖 「${activeCharInfo().name}」点击台词库（共 ${profile.getAllLines().length} 句）：`)
+      listTitle.style.fontSize = '11.5px'
+      listTitle.style.fontWeight = 'bold'
+      listTitle.style.color = '#72f1b8'
+      listHeader.appendChild(listTitle)
+
+      const linesScroll = $('div')
+      linesScroll.style.display = 'flex'
+      linesScroll.style.flexDirection = 'column'
+      linesScroll.style.gap = '6px'
+      linesScroll.style.maxHeight = '230px'
+      linesScroll.style.overflowY = 'auto'
+
+      const allItems = profile.getAllLines()
+      for (const item of allItems) {
+        const lineCard = $('div')
+        lineCard.style.display = 'flex'
+        lineCard.style.flexDirection = 'column'
+        lineCard.style.gap = '4px'
+        lineCard.style.padding = '6px 8px'
+        lineCard.style.background = 'rgba(0, 0, 0, 0.28)'
+        lineCard.style.borderRadius = '6px'
+        lineCard.style.border = '1px solid rgba(255, 255, 255, 0.06)'
+
+        const parsed = ActionCueParser.parse(item.text)
+
+        // 第一行：部位标签 + 文本 + 操作按钮
+        const r1 = $('div')
+        r1.style.display = 'flex'
+        r1.style.alignItems = 'center'
+        r1.style.justifyContent = 'space-between'
+        r1.style.gap = '6px'
+
+        const leftGroup = $('div')
+        leftGroup.style.display = 'flex'
+        leftGroup.style.alignItems = 'center'
+        leftGroup.style.gap = '5px'
+        leftGroup.style.overflow = 'hidden'
+        leftGroup.style.flex = '1'
+
+        const zoneBadge = $('span', null, item.zone === 'head' ? '摸头' : '戳身')
+        zoneBadge.style.fontSize = '9.5px'
+        zoneBadge.style.padding = '1px 4px'
+        zoneBadge.style.borderRadius = '3px'
+        zoneBadge.style.background = item.zone === 'head' ? 'rgba(124, 92, 255, 0.2)' : 'rgba(114, 241, 184, 0.2)'
+        zoneBadge.style.color = item.zone === 'head' ? '#a58aff' : '#72f1b8'
+        zoneBadge.style.border = item.zone === 'head' ? '1px solid rgba(124, 92, 255, 0.4)' : '1px solid rgba(114, 241, 184, 0.4)'
+        zoneBadge.style.flexShrink = '0'
+
+        const textEl = $('span', null, item.text)
+        textEl.style.fontSize = '11px'
+        textEl.style.color = '#eee'
+        textEl.style.whiteSpace = 'nowrap'
+        textEl.style.overflow = 'hidden'
+        textEl.style.textOverflow = 'ellipsis'
+        textEl.title = item.text
+
+        leftGroup.append(zoneBadge, textEl)
+
+        const btnGroup = $('div')
+        btnGroup.style.display = 'flex'
+        btnGroup.style.alignItems = 'center'
+        btnGroup.style.gap = '4px'
+        btnGroup.style.flexShrink = '0'
+
+        const triggerBtn = $('button', 'dshp-btn dshp-primary', '👆 演练')
+        triggerBtn.style.padding = '2px 6px'
+        triggerBtn.style.fontSize = '10px'
+        triggerBtn.title = '在桌宠身上演练此动作与语音'
+        triggerBtn.addEventListener('click', () => {
+          profile.triggerLine(item)
+        })
+        btnGroup.appendChild(triggerBtn)
+
+        if (item.custom) {
+          const delBtn = $('button', 'dshp-btn', '🗑️')
+          delBtn.style.padding = '2px 5px'
+          delBtn.style.fontSize = '10px'
+          delBtn.style.color = '#ff6b6b'
+          delBtn.title = '删除此条自定义台词'
+          delBtn.addEventListener('click', () => {
+            if (!confirm(`确认删除此台词「${item.text}」吗？`)) return
+            profile.deleteCustomLine(item.id)
+            renderPane('click')
+          })
+          btnGroup.appendChild(delBtn)
+        }
+
+        r1.append(leftGroup, btnGroup)
+
+        // 第二行：语音口播内容指示
+        const r2 = $('div')
+        r2.style.fontSize = '10px'
+        r2.style.color = '#888'
+        r2.style.overflow = 'hidden'
+        r2.style.textOverflow = 'ellipsis'
+        r2.style.whiteSpace = 'nowrap'
+        r2.innerHTML = `🔊 语音口播：<span style="color:#aaa;">${parsed.speechText ? '“' + parsed.speechText + '”' : '（纯动作描写，语音静默）'}</span>`
+
+        lineCard.append(r1, r2)
+        linesScroll.appendChild(lineCard)
+      }
+
+      listCard.append(listHeader, linesScroll)
+      clickBox.append(topRow, tipBar, inputCard, listCard)
+      panes.appendChild(clickBox)
       return
     }
 
