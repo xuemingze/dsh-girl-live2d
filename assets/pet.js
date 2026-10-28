@@ -274,8 +274,15 @@
     audioCurrentVolume = 0
   }
 
-  async function playAudioWithLipSync(url) {
-    if (!CFG.sound) return
+  async function playAudioWithLipSync(url, { force = false } = {}) {
+    if (!CFG.sound) {
+      if (force) {
+        CFG.sound = true
+        persistCfg()
+      } else {
+        return
+      }
+    }
     stopCurrentAudio()
     try {
       if (!audioCtx) {
@@ -607,29 +614,66 @@
     return { decor, scene, action, emotion }
   }
 
+  let activeModelLoadSeq = 0
+  let switchingCharId = null
+
+  function clearAllStageModels() {
+    if (app && app.stage) {
+      for (const child of Array.from(app.stage.children)) {
+        try {
+          if (child.internalModel) {
+            child.internalModel.off('beforeModelUpdate', applyRig)
+          }
+          app.stage.removeChild(child)
+          child.destroy({ children: true, texture: false, baseTexture: false })
+        } catch (e) {
+          console.warn('[桌宠] 舞台模型销毁异常:', e)
+        }
+      }
+      app.stage.removeChildren()
+    }
+    model = null
+    coreModel = null
+  }
+
   async function loadCharacterModel(charId) {
     const char = CHARACTERS[charId] || CHARACTERS.tutu
     activeCharacterId = char.id
-    if (model) {
-      try {
-        if (model.internalModel) {
-          model.internalModel.off('beforeModelUpdate', applyRig)
-        }
-        app.stage.removeChild(model)
-        model.destroy()
-      } catch (e) {}
-      model = null
-      coreModel = null
-    }
+    const currentSeq = ++activeModelLoadSeq
+
+    // 1. 先把当前舞台上的所有模型和 rig 监听彻底清理
+    clearAllStageModels()
+
+    // 2. 清理 rig 历史状态，防止不同角色间参数与道具互相污染
+    rig.userProps.clear()
+    rig.props.clear()
+    rig.weight.clear()
+    rig.face = null
+    rig.override = null
+    rig.burst = null
+    device.out = false
+    if (applyRig._appliedParams) applyRig._appliedParams.clear()
 
     const { Live2DModel } = PIXI.live2d
     Live2DModel.registerTicker(PIXI.Ticker)
 
-    model = await Live2DModel.from(char.modelUrl, {
+    const loadedModel = await Live2DModel.from(char.modelUrl, {
       autoInteract: false,
       autoUpdate: true,
       idleMotionGroup: 'idle',
     })
+
+    // 3. 检查异步加载期间是否有新请求发生；若有，丢弃当前模型
+    if (currentSeq !== activeModelLoadSeq) {
+      try {
+        loadedModel.destroy({ children: true, texture: false, baseTexture: false })
+      } catch (e) {}
+      return
+    }
+
+    // 4. 再次确保舞台干净，再挂载新模型
+    clearAllStageModels()
+    model = loadedModel
     model.eventMode = 'none'
     app.stage.addChild(model)
 
@@ -677,6 +721,9 @@
   async function switchCharacter(charId) {
     const target = CHARACTERS[charId]
     if (!target) return
+    if (switchingCharId === charId) return
+    switchingCharId = charId
+
     CFG.characterId = charId
     persistCfg()
     try {
@@ -691,12 +738,18 @@
       await loadCharacterModel(charId)
       const box = await fitFromMeasurement()
       applyPosition(readLayout())
-      restoreProps()
-      setBase('neutral', IDLE_PROPS)
+      if (charId === 'whale') {
+        restoreProps()
+        setBase('neutral', IDLE_PROPS)
+      } else {
+        setBase('neutral', [])
+      }
       updateMenuTabLabels()
       ui.bubble.show('主人好！我是 ' + target.name + '（' + target.title + '），很高兴陪伴你~', { sticky: false, duration: 4000 })
     } catch (err) {
       ui.bubble.show('切换模型失败: ' + ((err && err.message) || err), { sticky: false, duration: 3000 })
+    } finally {
+      switchingCharId = null
     }
   }
 
@@ -3230,6 +3283,14 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   // ——————————————————————————————————————————————————————————————
 
   function buildUI() {
+    // 防御性清理：防止页面内或热重载时残留历史 DOM 根节点
+    try {
+      const oldRoot = document.getElementById('dsh-live2d-pet')
+      if (oldRoot) oldRoot.remove()
+      const oldTabs = document.querySelectorAll('.dshp-tab')
+      oldTabs.forEach((el) => el.remove())
+    } catch (e) {}
+
     const root = $('div', 'dshp-root')
     root.id = 'dsh-live2d-pet'
 
@@ -5085,7 +5146,166 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
       volLabel.append(volRange, volVal)
 
-      // 2. ✨ 提示词声音生成器卡片
+      // 2. 🎵 示例音色库卡片（本地音色池）
+      const poolCard = $('div', 'dshp-panel-card')
+      poolCard.style.padding = '10px 12px'
+      poolCard.style.background = 'rgba(255, 255, 255, 0.04)'
+      poolCard.style.borderRadius = '10px'
+      poolCard.style.border = '1px solid rgba(255, 255, 255, 0.12)'
+      poolCard.style.display = 'flex'
+      poolCard.style.flexDirection = 'column'
+      poolCard.style.gap = '8px'
+
+      const poolHeader = $('div', 'dshp-row')
+      poolHeader.style.display = 'flex'
+      poolHeader.style.justifyContent = 'space-between'
+      poolHeader.style.alignItems = 'center'
+
+      const poolTitle = $('div', null, '🎵 示例音色库（本地音色池）')
+      poolTitle.style.fontWeight = 'bold'
+      poolTitle.style.fontSize = '12px'
+      poolTitle.style.color = '#72f1b8'
+
+      const refreshPoolBtn = $('button', 'dshp-btn', '🔄 刷新')
+      refreshPoolBtn.style.padding = '2px 8px'
+      refreshPoolBtn.style.fontSize = '10px'
+      poolHeader.append(poolTitle, refreshPoolBtn)
+
+      const poolList = $('div')
+      poolList.style.display = 'flex'
+      poolList.style.flexDirection = 'column'
+      poolList.style.gap = '6px'
+      poolList.style.maxHeight = '180px'
+      poolList.style.overflowY = 'auto'
+      poolList.style.paddingRight = '2px'
+
+      const refAudioInput = document.createElement('input')
+      refAudioInput.type = 'text'
+      refAudioInput.placeholder = '参考音频相对路径 (如 voice_engine/voices_pool/...)'
+      refAudioInput.value = (activeCharInfo().voice && activeCharInfo().voice.referenceAudio) || ''
+      refAudioInput.style.width = '100%'
+      refAudioInput.style.boxSizing = 'border-box'
+      refAudioInput.style.fontSize = '11px'
+      refAudioInput.style.padding = '4px 6px'
+      refAudioInput.style.borderRadius = '4px'
+      refAudioInput.style.background = '#1b1b1b'
+      refAudioInput.style.color = '#ccc'
+      refAudioInput.style.border = '1px solid #333'
+
+      async function loadVoicePool() {
+        poolList.innerHTML = '<div style="font-size:11px;color:#888;text-align:center;padding:12px;">正在加载示例音色池...</div>'
+        try {
+          const data = await apiFetch(BASE + '/voices')
+          poolList.innerHTML = ''
+          const list = (data && data.localPool) || []
+          if (list.length === 0) {
+            const emptyEl = $('div')
+            emptyEl.style.fontSize = '11px'
+            emptyEl.style.color = '#888'
+            emptyEl.style.textAlign = 'center'
+            emptyEl.style.padding = '12px 4px'
+            emptyEl.style.lineHeight = '1.6'
+            emptyEl.innerHTML = '音色池暂无示例音频<br><span style="color:#666;font-size:10px;">可在下方生成声音后点击「📥 保存为示例音」哦~</span>'
+            poolList.appendChild(emptyEl)
+            return
+          }
+          for (const item of list) {
+            const row = $('div')
+            row.style.display = 'flex'
+            row.style.alignItems = 'center'
+            row.style.justifyContent = 'space-between'
+            row.style.padding = '6px 8px'
+            row.style.background = 'rgba(0, 0, 0, 0.25)'
+            row.style.borderRadius = '6px'
+            row.style.border = '1px solid rgba(255, 255, 255, 0.06)'
+            row.style.gap = '6px'
+
+            const infoCol = $('div')
+            infoCol.style.display = 'flex'
+            infoCol.style.flexDirection = 'column'
+            infoCol.style.overflow = 'hidden'
+            infoCol.style.flex = '1'
+
+            const nameEl = $('span', null, item.name || item.file)
+            nameEl.style.fontSize = '11.5px'
+            nameEl.style.fontWeight = 'bold'
+            nameEl.style.color = '#eee'
+            nameEl.style.whiteSpace = 'nowrap'
+            nameEl.style.overflow = 'hidden'
+            nameEl.style.textOverflow = 'ellipsis'
+
+            const sizeText = item.size ? (item.size > 1024 * 1024 ? (item.size / 1024 / 1024).toFixed(1) + 'MB' : Math.round(item.size / 1024) + 'KB') : ''
+            const metaEl = $('span', 'dshp-hint', sizeText ? `${item.file} · ${sizeText}` : item.file)
+            metaEl.style.fontSize = '10px'
+            metaEl.style.color = '#888'
+            metaEl.style.whiteSpace = 'nowrap'
+            metaEl.style.overflow = 'hidden'
+            metaEl.style.textOverflow = 'ellipsis'
+
+            infoCol.append(nameEl, metaEl)
+
+            const btnGroup = $('div')
+            btnGroup.style.display = 'flex'
+            btnGroup.style.gap = '4px'
+            btnGroup.style.flexShrink = '0'
+
+            // [▶ 试听] 按钮：播放当前示例音频，口型同步，绝不重新生成
+            const playBtn = $('button', 'dshp-btn dshp-primary', '▶ 试听')
+            playBtn.style.padding = '3px 7px'
+            playBtn.style.fontSize = '10px'
+            playBtn.title = '试听此示例音色并驱动桌宠口型'
+            playBtn.addEventListener('click', async () => {
+              ui.bubble.show(`正在试听示例音色「${item.name || item.file}」...`, { duration: 3000 })
+              await playAudioWithLipSync(item.path, { force: true })
+            })
+
+            // [📌 设为参考] 按钮：填入下方本地模型克隆参考路径
+            const pickBtn = $('button', 'dshp-btn', '📌 设为参考')
+            pickBtn.style.padding = '3px 7px'
+            pickBtn.style.fontSize = '10px'
+            pickBtn.title = '填入本地克隆参考音频输入框'
+            pickBtn.addEventListener('click', () => {
+              refAudioInput.value = 'voice_engine/voices_pool/' + item.file
+              ui.bubble.show(`已将「${item.file}」设为克隆参考音频`, { duration: 2500 })
+            })
+
+            // [🗑️ 删除] 按钮
+            const delBtn = $('button', 'dshp-btn', '🗑️')
+            delBtn.style.padding = '3px 6px'
+            delBtn.style.fontSize = '10px'
+            delBtn.style.color = '#ff6b6b'
+            delBtn.title = '从本地音色池删除此音频'
+            delBtn.addEventListener('click', async () => {
+              if (!confirm(`确认要删除示例音色「${item.file}」吗？`)) return
+              try {
+                const res = await apiFetch(BASE + '/delete-pool-voice', {
+                  method: 'POST',
+                  body: JSON.stringify({ file: item.file }),
+                })
+                if (res && res.ok) {
+                  ui.bubble.show(`已删除示例音色「${item.file}」`, { duration: 2500 })
+                  loadVoicePool()
+                } else {
+                  alert('删除失败: ' + ((res && res.error) || '未知错误'))
+                }
+              } catch (e) {
+                alert('删除异常: ' + e.message)
+              }
+            })
+
+            btnGroup.append(playBtn, pickBtn, delBtn)
+            row.append(infoCol, btnGroup)
+            poolList.appendChild(row)
+          }
+        } catch (e) {
+          poolList.innerHTML = `<div style="font-size:11px;color:#ff8888;text-align:center;padding:10px;">读取音色池异常: ${e.message}</div>`
+        }
+      }
+
+      refreshPoolBtn.addEventListener('click', () => loadVoicePool())
+      poolCard.append(poolHeader, poolList)
+
+      // 3. ✨ 提示词声音生成器卡片
       const genCard = $('div', 'dshp-panel-card')
       genCard.style.padding = '10px 12px'
       genCard.style.background = 'rgba(124, 92, 255, 0.08)'
@@ -5181,13 +5401,15 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       // 生成操作按钮
       const genBtnRow = $('div', 'dshp-row')
       genBtnRow.style.display = 'flex'
+      genBtnRow.style.flexWrap = 'wrap'
       genBtnRow.style.gap = '6px'
 
       let lastGeneratedVoice = null
+      let lastGeneratedAudioUrl = null
 
       const genPlayBtn = $('button', 'dshp-btn dshp-primary', '▶ 生成并试听声音')
       genPlayBtn.style.flex = '1'
-      genPlayBtn.style.padding = '6px'
+      genPlayBtn.style.padding = '6px 8px'
       genPlayBtn.style.fontWeight = 'bold'
       genPlayBtn.addEventListener('click', async () => {
         const p = promptInput.value.trim()
@@ -5195,7 +5417,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           ui.bubble.show('请先填写声音提示词或点击预设标签！', { duration: 2000 })
           return
         }
-        genPlayBtn.textContent = '正在通过 9880 智能生成...'
+        genPlayBtn.textContent = '正在生成...'
         genPlayBtn.disabled = true
         try {
           const resData = await apiFetch(BASE + '/generate-voice', {
@@ -5210,6 +5432,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           })
           if (resData && resData.ok && resData.audioUrl) {
             lastGeneratedVoice = resData.voice
+            lastGeneratedAudioUrl = resData.audioUrl
             if (activeCharInfo()) {
               activeCharInfo().voice = Object.assign(activeCharInfo().voice || {}, {
                 voice_name: resData.voice,
@@ -5219,7 +5442,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
               })
             }
             ui.bubble.show(`声音生成成功！匹配音色：${resData.voice} (${resData.rate || '+0%'}, ${resData.pitch || '+0Hz'})`, { duration: 3500 })
-            await playAudioWithLipSync(resData.audioUrl)
+            await playAudioWithLipSync(resData.audioUrl, { force: true })
           } else {
             alert('生成失败: ' + ((resData && resData.error) || '未知错误'))
           }
@@ -5232,7 +5455,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
 
       const saveVoiceBtn = $('button', 'dshp-btn', '💾 设为当前伴侣声音')
-      saveVoiceBtn.style.padding = '6px 10px'
+      saveVoiceBtn.style.padding = '6px 8px'
+      saveVoiceBtn.style.fontSize = '11px'
       saveVoiceBtn.addEventListener('click', async () => {
         saveVoiceBtn.textContent = '保存中...'
         saveVoiceBtn.disabled = true
@@ -5267,10 +5491,46 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         }
       })
 
-      genBtnRow.append(genPlayBtn, saveVoiceBtn)
+      const saveToPoolBtn = $('button', 'dshp-btn', '📥 保存为示例音')
+      saveToPoolBtn.style.padding = '6px 8px'
+      saveToPoolBtn.style.fontSize = '11px'
+      saveToPoolBtn.title = '将刚生成的声音持久化保存到本地示例音色池'
+      saveToPoolBtn.addEventListener('click', async () => {
+        if (!lastGeneratedAudioUrl) {
+          ui.bubble.show('请先点击「▶ 生成并试听声音」，满意后再保存为示例音哦~', { duration: 2500 })
+          return
+        }
+        const defaultName = `${activeCharInfo().id}_${(lastGeneratedVoice || 'voice').replace(/^zh-CN-/, '')}_${new Date().toISOString().slice(5, 10).replace('-', '')}`
+        const name = prompt('请输入示例音色保存名称（如 sweet_girl）：', defaultName)
+        if (!name || !name.trim()) return
+        saveToPoolBtn.textContent = '保存中...'
+        saveToPoolBtn.disabled = true
+        try {
+          const res = await apiFetch(BASE + '/save-to-pool', {
+            method: 'POST',
+            body: JSON.stringify({
+              name: name.trim(),
+              characterId: activeCharacterId,
+            }),
+          })
+          if (res && res.ok) {
+            ui.bubble.show(`已成功存入本地音色池：${res.file}！`, { duration: 3500 })
+            loadVoicePool()
+          } else {
+            alert('保存失败: ' + ((res && res.error) || '未知错误'))
+          }
+        } catch (e) {
+          alert('保存异常: ' + e.message)
+        } finally {
+          saveToPoolBtn.textContent = '📥 保存为示例音'
+          saveToPoolBtn.disabled = false
+        }
+      })
+
+      genBtnRow.append(genPlayBtn, saveVoiceBtn, saveToPoolBtn)
       genCard.append(genTitle, promptInput, presetRow, acousticRow, testInput, genBtnRow)
 
-      // 3. 📁 本地 TTS 导入与配置卡片
+      // 4. 📁 本地 TTS 导入与配置卡片
       const localCard = $('div', 'dshp-panel-card')
       localCard.style.padding = '10px 12px'
       localCard.style.background = 'rgba(255, 255, 255, 0.03)'
@@ -5315,41 +5575,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
       engineRow.append(engineLabel, engineSel)
 
-      // 本地音色池快速选择
-      const poolRow = $('div', 'dshp-row')
-      poolRow.style.display = 'flex'
-      poolRow.style.alignItems = 'center'
-      poolRow.style.gap = '6px'
-
-      const poolLabel = $('span', 'dshp-hint', '音色库:')
-      poolLabel.style.width = '60px'
-
-      const poolSel = document.createElement('select')
-      poolSel.style.flex = '1'
-      poolSel.style.fontSize = '11px'
-      poolSel.style.padding = '3px 4px'
-      poolSel.style.borderRadius = '4px'
-      poolSel.style.background = '#222'
-      poolSel.style.color = '#eee'
-      poolSel.style.border = '1px solid #444'
-
-      const optDefault = document.createElement('option')
-      optDefault.value = ''
-      optDefault.textContent = '(从本地音色池快速选择...)'
-      poolSel.appendChild(optDefault)
-
-      const refAudioInput = document.createElement('input')
-      refAudioInput.type = 'text'
-      refAudioInput.placeholder = '参考音频相对路径 (如 voice_engine/voices_pool/...)'
-      refAudioInput.value = (activeCharInfo().voice && activeCharInfo().voice.referenceAudio) || ''
-      refAudioInput.style.width = '100%'
-      refAudioInput.style.boxSizing = 'border-box'
-      refAudioInput.style.fontSize = '11px'
-      refAudioInput.style.padding = '4px 6px'
-      refAudioInput.style.borderRadius = '4px'
-      refAudioInput.style.background = '#1b1b1b'
-      refAudioInput.style.color = '#ccc'
-      refAudioInput.style.border = '1px solid #333'
+      const refTextHint = $('div', 'dshp-hint', '💡 可在上方的「🎵 示例音色库」直接点击「📌 设为参考」填入参考路径。')
+      refTextHint.style.fontSize = '10.5px'
+      refTextHint.style.color = '#888'
 
       const refTextInput = document.createElement('input')
       refTextInput.type = 'text'
@@ -5363,24 +5591,6 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       refTextInput.style.background = '#1b1b1b'
       refTextInput.style.color = '#ccc'
       refTextInput.style.border = '1px solid #333'
-
-      // 异步加载本地音色库
-      apiFetch(BASE + '/voices').then((data) => {
-        if (data && data.localPool) {
-          for (const lp of data.localPool) {
-            const opt = document.createElement('option')
-            opt.value = lp.path
-            opt.textContent = lp.file
-            poolSel.appendChild(opt)
-          }
-        }
-      }).catch(() => {})
-
-      poolSel.addEventListener('change', () => {
-        if (poolSel.value) refAudioInput.value = poolSel.value
-      })
-
-      poolRow.append(poolLabel, poolSel)
 
       const saveLocalBtn = $('button', 'dshp-btn', '💾 保存本地 TTS 模型配置')
       saveLocalBtn.style.padding = '6px'
@@ -5407,10 +5617,11 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         }
       })
 
-      localCard.append(localTitle, engineRow, poolRow, refAudioInput, refTextInput, saveLocalBtn)
+      localCard.append(localTitle, engineRow, refTextHint, refAudioInput, refTextInput, saveLocalBtn)
 
-      box.append(statusTitle, basicRow, volLabel, genCard, localCard)
+      box.append(statusTitle, basicRow, volLabel, poolCard, genCard, localCard)
       panes.appendChild(box)
+      loadVoicePool()
       return
     }
 
@@ -6752,7 +6963,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   function handleEvent(m) {
     switch (m.t) {
       case 'character-changed':
-        if (m.characterId && m.characterId !== activeCharacterId && CHARACTERS[m.characterId]) {
+        if (m.characterId && m.characterId !== activeCharacterId && m.characterId !== switchingCharId && CHARACTERS[m.characterId]) {
           switchCharacter(m.characterId)
         }
         break

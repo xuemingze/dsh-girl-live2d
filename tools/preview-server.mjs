@@ -22,6 +22,8 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const ASSETS = path.join(ROOT, 'assets')
+const VOICES_POOL_DIR = path.join(ROOT, 'voice_engine', 'voices_pool')
+try { fs.mkdirSync(VOICES_POOL_DIR, { recursive: true }) } catch (e) {}
 
 const argv = process.argv.slice(2)
 const PORT = Number(argv[argv.indexOf('--port') + 1]) || 5199
@@ -33,6 +35,10 @@ const MIME = {
   '.png': 'image/png',
   '.html': 'text/html; charset=utf-8',
   '.moc3': 'application/octet-stream',
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4',
 }
 
 const clients = new Set()
@@ -267,13 +273,105 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url === '/dsh-pet/voices') {
+    const localPool = []
     try {
-      const resp = await fetch('http://127.0.0.1:9880/voices_list')
-      const d = await resp.json()
-      return send(res, 200, MIME['.json'], JSON.stringify(d))
-    } catch (e) {
-      return send(res, 503, MIME['.json'], JSON.stringify({ ok: false, error: '9880 离线' }))
-    }
+      if (fs.existsSync(VOICES_POOL_DIR)) {
+        for (const f of fs.readdirSync(VOICES_POOL_DIR)) {
+          if (f.toLowerCase().match(/\.(wav|mp3|ogg|m4a|flac)$/)) {
+            const fullP = path.join(VOICES_POOL_DIR, f)
+            const st = fs.statSync(fullP)
+            localPool.push({
+              file: f,
+              name: f.replace(/\.[^.]+$/, ''),
+              path: '/dsh-pet/voices_pool/' + encodeURIComponent(f),
+              size: st.size,
+              mtime: st.mtimeMs,
+            })
+          }
+        }
+      }
+    } catch (e) {}
+
+    let systemVoices = [
+      { id: 'zh-CN-XiaoxiaoNeural', name: '晓晓 (元气女声/全能推荐)' },
+      { id: 'zh-CN-XiaoyiNeural', name: '晓伊 (温柔治愈/深海女仆)' },
+      { id: 'zh-CN-YunjianNeural', name: '云健 (沉稳男声/知性严谨)' },
+      { id: 'zh-CN-YunxiNeural', name: '云希 (阳光正太/元气活泼)' },
+      { id: 'zh-CN-YunyangNeural', name: '云扬 (清亮青年/专业助理)' },
+      { id: 'zh-CN-liaoning-XiaobeiNeural', name: '东北晓北 (幽默开朗/东北风情)' },
+      { id: 'zh-CN-shaanxi-XiaoniNeural', name: '陕西晓妮 (自然甜美/西北乡情)' },
+      { id: 'zh-TW-HsiaoChenNeural', name: '台湾晓臻 (软萌可爱/台湾国语)' },
+      { id: 'zh-HK-HiuGaaiNeural', name: '香港晓佳 (粤语温润/优雅从容)' },
+    ]
+    try {
+      const resp = await fetch('http://127.0.0.1:9880/voices_list', { signal: AbortSignal.timeout(1500) })
+      if (resp.ok) {
+        const d = await resp.json()
+        if (d && Array.isArray(d.systemVoices)) systemVoices = d.systemVoices
+      }
+    } catch (e) {}
+
+    return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, systemVoices, localPool }))
+  }
+
+  if (url === '/dsh-pet/delete-pool-voice') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let j = {}
+      try { j = JSON.parse(body || '{}') } catch (e) {}
+      const rawFile = j.file || ''
+      const safeFile = path.basename(decodeURIComponent(rawFile))
+      if (!safeFile || safeFile === '.' || safeFile.startsWith('..')) {
+        return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: '无效的文件名' }))
+      }
+      const target = path.join(VOICES_POOL_DIR, safeFile)
+      if (fs.existsSync(target)) {
+        try {
+          fs.unlinkSync(target)
+          return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, deleted: safeFile }))
+        } catch (e) {
+          return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: e.message }))
+        }
+      }
+      return send(res, 404, MIME['.json'], JSON.stringify({ ok: false, error: '文件不存在' }))
+    })
+    return
+  }
+
+  if (url === '/dsh-pet/save-to-pool') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let j = {}
+      try { j = JSON.parse(body || '{}') } catch (e) {}
+      let bufferToSave = null
+      if (j.audioBase64) {
+        try {
+          bufferToSave = Buffer.from(j.audioBase64, 'base64')
+        } catch (e) {}
+      } else if (latestAudioBuffer) {
+        bufferToSave = latestAudioBuffer
+      }
+      if (!bufferToSave || bufferToSave.length === 0) {
+        return send(res, 400, MIME['.json'], JSON.stringify({ ok: false, error: '没有可供保存的音频数据，请先生成声音' }))
+      }
+      const rawName = (j.name || ('sample_' + Date.now())).trim()
+      let safeName = rawName.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]/g, '_')
+      if (!safeName.toLowerCase().endsWith('.wav')) safeName += '.wav'
+      const targetPath = path.join(VOICES_POOL_DIR, safeName)
+      try {
+        fs.writeFileSync(targetPath, bufferToSave)
+        return send(res, 200, MIME['.json'], JSON.stringify({
+          ok: true,
+          file: safeName,
+          path: '/dsh-pet/voices_pool/' + encodeURIComponent(safeName),
+        }))
+      } catch (e) {
+        return send(res, 500, MIME['.json'], JSON.stringify({ ok: false, error: e.message }))
+      }
+    })
+    return
   }
 
   if (url === '/dsh-pet/generate-voice') {
@@ -552,6 +650,16 @@ const server = http.createServer(async (req, res) => {
       rel = url.slice('/dsh-pet/characters/'.length)
     }
     return serveFile(res, path.join(ROOT, 'characters', rel))
+  }
+  if (url.startsWith('/dsh-pet/voices_pool/')) {
+    let rel
+    try {
+      rel = decodeURIComponent(url.slice('/dsh-pet/voices_pool/'.length))
+    } catch (e) {
+      rel = url.slice('/dsh-pet/voices_pool/'.length)
+    }
+    const safeName = path.basename(rel)
+    return serveFile(res, path.join(VOICES_POOL_DIR, safeName))
   }
   if (url.startsWith('/dsh-pet/modules/')) {
     let rel
