@@ -16,12 +16,19 @@
     "promptPrefix": "你是小小，一只软萌体贴的龙娘伴侣。性格温柔治愈，关心主人的身心状态。"
   },
   "expressions": {
+    "excited": "expression7.exp3.json",
     "happy": "expression1.exp3.json",
-    "love": "expression2.exp3.json",
+    "love": "expression6.exp3.json",
     "shy": "expression12.exp3.json",
-    "excited": "expression10.exp3.json",
-    "angry": "expression10.exp3.json",
-    "confused": "expression9.exp3.json"
+    "playful": "expression1.exp3.json",
+    "sad": "expression11.exp3.json",
+    "cry": "expression11.exp3.json",
+    "grumpy": "expression10.exp3.json",
+    "gloomy": "expression8.exp3.json",
+    "confused": "expression9.exp3.json",
+    "sleepy": "expression13.exp3.json",
+    "tongue": "expression13.exp3.json",
+    "dead": "expression13.exp3.json"
   },
   "motions": {
     "idle": "idle1.motion3.json",

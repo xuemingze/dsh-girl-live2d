@@ -468,8 +468,9 @@
   /**
    * 伴随动作点击的专属角色 TTS 实时合成与播报（自动携带当前角色专属声线）
    */
-  async function speakCharacterText(text, charId = activeCharacterId) {
-    if (!text || !CFG.sound || CFG.tapVoice === false) return
+  async function speakCharacterText(text, charId = activeCharacterId, { isTap = false } = {}) {
+    if (!text || CFG.sound === false) return
+    if (isTap && CFG.tapVoice === false) return
     const char = CHARACTERS[charId] || {}
     const charVoice = char.voice || {}
     try {
@@ -1355,10 +1356,20 @@
     ],
     fat: ['你再说一遍？！人家这是可爱，不是胖！', '本鲸这是丰腴！', '（真生气）不许说胖！'],
     hungry: ['主人，人家饿了…有白饭吗', '（盯着你的碗）', '干了这么多活，该管饭了吧'],
-    reading: ['（凑近看）', '这份人家得仔细看看', '眼镜呢…哦在脸上', '（认真脸）'],
+    reading: [
+      '（凑近看）这份资料人家得仔细看看。',
+      '（认真翻阅）资料有点多呢，稍等人家一下下哦~',
+      '（推了推眼镜）待人家查阅一番相关档案…',
+      '（目不转睛）材料很关键，正在全神贯注阅读中。',
+    ],
     /** 场景大件收走的时候说的话（不然东西凭空消失很怪）。 */
     tidy: ['（收拾一下桌面）', '好啦，人家收起来了', '摆一会儿就够了，人家还要干活呢', '（把东西归位）'],
-    thinking: ['让人家想想…', '嗯…这里得捋一捋', '别催别催，快好了', '（咬着笔杆）'],
+    thinking: [
+      '（咬着笔杆）让人家想想，这个问题该怎么解决呢…',
+      '（敲了敲脑袋）嗯…这里得仔细捋一捋思路。',
+      '（托腮沉思）别催别催，就快想出来啦！',
+      '（灵光一闪）让本伴侣的大脑飞速运转一下~',
+    ],
     working: ['（敲键盘）', '交给人家的就放心', '噼里啪啦…', '（认真工作）'],
     wake: ['唔…怎么了主人', '人家醒着呢', '（揉眼睛）'],
   }
@@ -3409,13 +3420,19 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     // 轮播只改底层状态，不产生会赖着不走的一次性反应
     setBase(stepDef.mood, WORK_PROPS)
     // 正在思考/看资料：把话说到气泡正文里，别只更新脚注（那样看着像在摸鱼）
-    if (!rig.talking && ui.bubble.visible) {
-      ui.bubble.show(pickFresh(SAY[stepDef.say], 'work-' + stepDef.say), {
+    if (!rig.talking) {
+      const profile = TapProfileRegistry.get(activeCharacterId)
+      const rawLine = (stepDef.mood === 'reading') ? profile.pickReadingLine() : profile.pickThinkingLine()
+      const parsed = ActionCueParser.parse(rawLine)
+      ui.bubble.show(parsed.bubbleText, {
         name: activeCharInfo().name,
         busy: true,
         sticky: true,
       })
       ui.bubble.note(stepDef.mood === 'reading' ? '看资料' : '思考中')
+      if (CFG.sound !== false && parsed.speechText && !isSpeakingAudio) {
+        speakCharacterText(parsed.speechText, activeCharacterId)
+      }
     }
   }
 
@@ -4515,6 +4532,64 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       return [...this.getDefaultLines(), ...this.loadCustomLines()]
     }
 
+    getThinkingLines() {
+      return [
+        '（咬着笔杆）让人家想想，这个问题该怎么解决呢…',
+        '（敲了敲小脑瓜）嗯…这里得仔细捋一捋思路。',
+        '（托腮沉思）别催别催，本鲸就快想出来啦！',
+        '（灵光一闪）呼呼，让本鲸的大脑飞速运转一下~',
+      ]
+    }
+
+    getReadingLines() {
+      return [
+        '（凑近看）这份资料人家得仔细看看。',
+        '（推了推眼镜）待本鲸查阅一番相关档案…',
+        '（认真翻阅）资料有点多呢，稍等本鲸一下下哦~',
+        '（目不转睛）正在全神贯注阅读参考文档中…',
+      ]
+    }
+
+    pickThinkingLine() {
+      const list = this.getThinkingLines()
+      return pickFresh(list, `${this.characterId}-thinking`)
+    }
+
+    pickReadingLine() {
+      const list = this.getReadingLines()
+      return pickFresh(list, `${this.characterId}-reading`)
+    }
+
+    triggerThinkingLine() {
+      const line = this.pickThinkingLine()
+      const parsed = ActionCueParser.parse(line)
+      act({
+        mood: 'thinking',
+        line: parsed.bubbleText,
+        ms: 3000,
+      })
+      ui.bubble.note('思考中')
+      if (CFG.sound !== false && parsed.speechText) {
+        speakCharacterText(parsed.speechText, this.characterId)
+      }
+      return parsed
+    }
+
+    triggerReadingLine() {
+      const line = this.pickReadingLine()
+      const parsed = ActionCueParser.parse(line)
+      act({
+        mood: 'reading',
+        line: parsed.bubbleText,
+        ms: 3000,
+      })
+      ui.bubble.note('看资料')
+      if (CFG.sound !== false && parsed.speechText) {
+        speakCharacterText(parsed.speechText, this.characterId)
+      }
+      return parsed
+    }
+
     // 演练或触发某一条台词
     triggerLine(item) {
       const parsed = ActionCueParser.parse(item.text)
@@ -4529,7 +4604,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
 
       if (CFG.tapVoice !== false && parsed.speechText) {
-        speakCharacterText(parsed.speechText, this.characterId)
+        speakCharacterText(parsed.speechText, this.characterId, { isTap: true })
       }
     }
 
@@ -4545,7 +4620,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const parsed = ActionCueParser.parse(rawLine)
         act({ mood: busyHit.mood, line: parsed.bubbleText, ms: 2200 })
         if (CFG.tapVoice !== false && parsed.speechText) {
-          speakCharacterText(parsed.speechText, this.characterId)
+          speakCharacterText(parsed.speechText, this.characterId, { isTap: true })
         }
         return
       }
@@ -4566,7 +4641,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const parsed = ActionCueParser.parse(line)
         act({ mood: face, props: IDLE_PROPS, line: parsed.bubbleText, ms: 2600 })
         if (CFG.tapVoice !== false && parsed.speechText) {
-          speakCharacterText(parsed.speechText, this.characterId)
+          speakCharacterText(parsed.speechText, this.characterId, { isTap: true })
         }
         return
       }
@@ -4578,7 +4653,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const parsed = ActionCueParser.parse(line)
         act({ mood: face, props: IDLE_PROPS, line: parsed.bubbleText, ms: 2400 })
         if (CFG.tapVoice !== false && parsed.speechText) {
-          speakCharacterText(parsed.speechText, this.characterId)
+          speakCharacterText(parsed.speechText, this.characterId, { isTap: true })
         }
         return
       }
@@ -4635,6 +4710,24 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         { zone: 'body', text: '（急得跺脚）不理主人了啦！除非拿甜甜的草莓来哄兔兔！', mood: 'grumpy' },
       ]
     }
+
+    getThinkingLines() {
+      return [
+        '（晃了晃长耳朵）唔…兔兔的小脑袋正在高速思考中呢！',
+        '（咬着胡萝卜发呆）让兔兔琢磨一下，该怎么帮主人办好这件事呢…',
+        '（抓了抓耳朵）嗯…这里有点复杂，等兔兔想一想哦~',
+        '（两耳竖起）嘘，兔兔正在捕捉灵感电波呢！',
+      ]
+    }
+
+    getReadingLines() {
+      return [
+        '（趴在桌上看）哇，好多字呀，兔兔在认真看资料啦！',
+        '（揉了揉眼睛）兔兔正在仔细核对资料细节哦，主人别着急~',
+        '（一字一句读）唔…这段讲的是这个意思呀，兔兔都记下来啦！',
+        '（凑近屏幕）正在帮主人看资料，兔兔超专注的！',
+      ]
+    }
   }
 
   /**
@@ -4656,6 +4749,24 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         { zone: 'body', text: '（指尖轻点薄纱）想要触碰妾身，可没有那么容易呢。', mood: 'smug' },
         { zone: 'body', text: '（灵巧闪身）步法这般急躁，在西域可是会踏错舞步的哟。', mood: 'alert' },
         { zone: 'body', text: '（杏眼微嗔）再这般放肆地乱点，妾身可要用金铃红绫将您绑起来了~', mood: 'grumpy' },
+      ]
+    }
+
+    getThinkingLines() {
+      return [
+        '（指尖轻点朱唇）容妾身细细思量一番…',
+        '（轻摇金铃沉吟）世间万事皆有其理，容妾身推演一二。',
+        '（低眉沉思）主人莫急，妙计往往藏于静思之间。',
+        '（轻拂面纱）妾身心中已有几分计较了呢。',
+      ]
+    }
+
+    getReadingLines() {
+      return [
+        '（素手轻翻卷轴）这卷密函与文书，且让妾身为您阅览。',
+        '（凝眸细读）纸上墨迹如行云流水，妾身已然明了。',
+        '（以袖遮面翻看）这些资料颇有乾坤，待妾身为您甄别。',
+        '（微启朱唇轻诵）正阅览卷宗呢，主人稍候片刻。',
       ]
     }
   }
@@ -4681,6 +4792,24 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         { zone: 'body', text: '（张牙舞爪）超凶的嗷呜！小小可是巨龙，再戳小小就喷小火苗了哦！', mood: 'grumpy' },
       ]
     }
+
+    getThinkingLines() {
+      return [
+        '（晃了晃小龙角）嗷呜…小小的龙角好像在接收智慧信号呢！',
+        '（抱住小脑袋）唔…小小的小脑瓜正在用力转动中！',
+        '（掰着小手指）一加一等于几呢…等小小算清楚再告诉主人！',
+        '（眨巴大眼睛）主人等一下，小小马上就想明白了！',
+      ]
+    }
+
+    getReadingLines() {
+      return [
+        '（小爪子划着字）哇，好多密密麻麻的字，小小在认真看呢！',
+        '（趴在资料上）小小正在帮主人寻宝查资料哦，呼呼~',
+        '（摇晃小尾巴）小小已经看了一大半啦，马上看完！',
+        '（认真指读）一个字也不漏掉，小小的眼睛超厉害的！',
+      ]
+    }
   }
 
   /**
@@ -4704,6 +4833,24 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         { zone: 'body', text: '（无奈地叹了口气）真是拿主人没办法…再闹的话，今天晚餐就要取消甜点了哦！', mood: 'grumpy' },
       ]
     }
+
+    getThinkingLines() {
+      return [
+        '（扶正女仆发带）主人请放心，女仆可可正在为您周全规划！',
+        '（托着托盘思索）如何以最完美的方式完成任务呢…可可正在思考！',
+        '（歪头想了想）嗯…按照管家手册，这里需要精细处理呢。',
+        '（眼神坚定）主人稍候，可可马上得出最佳方案！',
+      ]
+    }
+
+    getReadingLines() {
+      return [
+        '（认真翻阅笔记）可可正在核查主人的备忘与文档！',
+        '（推了推平光镜）资料已送达，身为女仆必须严谨查对！',
+        '（一页页比对）正在为主人检索关键信息，请稍候片刻。',
+        '（双手捧着资料）主人吩咐的文件，可可正在全力审阅中！',
+      ]
+    }
   }
 
   /**
@@ -4725,6 +4872,22 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         { zone: 'body', text: '（捂住胸口）呀，突然点人家，吓了一跳呢！', mood: 'alert' },
         { zone: 'body', text: '（转了个圈）点得这么快，主人今天心情看起来很不错嘛？', mood: 'playful' },
         { zone: 'body', text: '（鼓起腮帮子）再一直戳的话，人家也是会小小地抗议一下的哦！', mood: 'pout' },
+      ]
+    }
+
+    getThinkingLines() {
+      return [
+        `（托腮思考）${this.charName}正在认真思考中，马上就好~`,
+        `（灵光一闪）让${this.charName}理清思路，很快为您解答！`,
+        `（认真思索）正在组织语言和逻辑，请稍候片刻哦。`,
+      ]
+    }
+
+    getReadingLines() {
+      return [
+        `（专注查阅）${this.charName}正在仔细阅读参考资料！`,
+        `（翻阅文档）正在为您核对相关文档与信息。`,
+        `（目不转睛）资料很多，${this.charName}正在全神贯注研读中。`,
       ]
     }
   }
@@ -6582,6 +6745,43 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       tipBar.style.lineHeight = '1.5'
       tipBar.innerHTML = '💡 <b>动作标志语机制说明</b>：文本中 <code>（）</code> 内为<b>动作标志语</b>（如 <i>（脸红）</i>、<i>（晃龙角）</i>、<i>（轻摇金铃）</i>）。气泡中会完整呈现并联动动作表情，而<b>语音朗读时会自动省略括号中的动作标志语</b>，只口播纯人声台词！'
 
+      // 2.5 状态交互演练卡片（思考中 / 看资料）
+      const statusAuditionBar = $('div')
+      statusAuditionBar.style.display = 'flex'
+      statusAuditionBar.style.alignItems = 'center'
+      statusAuditionBar.style.gap = '8px'
+      statusAuditionBar.style.padding = '8px 10px'
+      statusAuditionBar.style.background = 'rgba(255, 255, 255, 0.04)'
+      statusAuditionBar.style.borderRadius = '8px'
+      statusAuditionBar.style.border = '1px solid rgba(255, 255, 255, 0.08)'
+
+      const statusTitle = $('span')
+      statusTitle.style.fontSize = '11.5px'
+      statusTitle.style.fontWeight = 'bold'
+      statusTitle.style.color = '#72f1b8'
+      statusTitle.style.whiteSpace = 'nowrap'
+      statusTitle.textContent = '💡 状态交互演练：'
+
+      const thinkAuditionBtn = $('button', 'dshp-btn', '💭 演练「思考中」')
+      thinkAuditionBtn.style.flex = '1'
+      thinkAuditionBtn.style.padding = '5px 8px'
+      thinkAuditionBtn.style.fontSize = '11px'
+      thinkAuditionBtn.title = '演练伴侣在思考中的专属互动台词与语音（气泡带标志语，语音自动省略标志语）'
+      thinkAuditionBtn.addEventListener('click', () => {
+        profile.triggerThinkingLine()
+      })
+
+      const readAuditionBtn = $('button', 'dshp-btn', '📖 演练「看资料」')
+      readAuditionBtn.style.flex = '1'
+      readAuditionBtn.style.padding = '5px 8px'
+      readAuditionBtn.style.fontSize = '11px'
+      readAuditionBtn.title = '演练伴侣在查阅资料时的专属互动台词与语音（气泡带标志语，语音自动省略标志语）'
+      readAuditionBtn.addEventListener('click', () => {
+        profile.triggerReadingLine()
+      })
+
+      statusAuditionBar.append(statusTitle, thinkAuditionBtn, readAuditionBtn)
+
       // 3. 手动输入自定义台词卡片
       const inputCard = $('div', 'dshp-panel-card')
       inputCard.style.padding = '8px 10px'
@@ -6817,7 +7017,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
 
       listCard.append(listHeader, linesScroll)
-      clickBox.append(topRow, tipBar, inputCard, listCard)
+      clickBox.append(topRow, tipBar, statusAuditionBar, inputCard, listCard)
       panes.appendChild(clickBox)
       return
     }
@@ -8201,17 +8401,27 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         startWork()
         stopActing()
         setBase('thinking', WORK_PROPS)
-        ui.bubble.show(pick(SAY.start), { name: activeCharInfo().name, busy: true, sticky: true })
+        const startProfile = TapProfileRegistry.get(activeCharacterId)
+        const startLine = startProfile.pickThinkingLine()
+        const parsedStart = ActionCueParser.parse(startLine)
+        ui.bubble.show(parsedStart.bubbleText, { name: activeCharInfo().name, busy: true, sticky: true })
+        ui.bubble.note('思考中')
+        if (CFG.sound !== false && parsedStart.speechText && !isSpeakingAudio) {
+          speakCharacterText(parsedStart.speechText, activeCharacterId)
+        }
         break
 
       case 'step-start':
         agent.step = m.step
         setStatus('thinking')
         rig.talking = false
-        if (!ui.bubble.visible) {
-          ui.bubble.show(pickFresh(SAY.thinking, 'thinking'), { name: activeCharInfo().name, busy: true, sticky: true })
-        } else {
-          ui.bubble.note('正在思考 · 第 ' + m.step + ' 步')
+        const stepProfile = TapProfileRegistry.get(activeCharacterId)
+        const stepThinkLine = stepProfile.pickThinkingLine()
+        const parsedStep = ActionCueParser.parse(stepThinkLine)
+        ui.bubble.show(parsedStep.bubbleText, { name: activeCharInfo().name, busy: true, sticky: true })
+        ui.bubble.note('正在思考 · 第 ' + m.step + ' 步')
+        if (CFG.sound !== false && parsedStep.speechText && !isSpeakingAudio) {
+          speakCharacterText(parsedStep.speechText, activeCharacterId)
         }
         break
 
@@ -8294,12 +8504,16 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const pool = TOOL_LINE[m.name] || (react.lean ? SAY.reading : SAY.working)
         const line = pickFresh(pool, 'tool-' + m.name)
         const hint = toolHint(m.args)
-        ui.bubble.show(line + (hint ? '\n' + hint : ''), {
+        const parsedTool = ActionCueParser.parse(line)
+        ui.bubble.show(parsedTool.bubbleText + (hint ? '\n' + hint : ''), {
           name: activeCharInfo().name,
           busy: true,
           sticky: true,
         })
-        ui.bubble.note(m.label || m.name)
+        ui.bubble.note(m.label || m.name || (react.mood === 'reading' ? '看资料' : '工作中'))
+        if (CFG.sound !== false && parsedTool.speechText && !isSpeakingAudio) {
+          speakCharacterText(parsedTool.speechText, activeCharacterId)
+        }
         break
       }
 
