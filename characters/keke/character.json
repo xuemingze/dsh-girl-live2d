@@ -16,16 +16,20 @@
     "promptPrefix": "你是可可，一位活力四射、热情开朗的女仆伴侣。做事认真干练，充满干劲。"
   },
   "expressions": {
+    "excited": "1星星眼.exp3.json",
     "happy": "1星星眼.exp3.json",
     "love": "1爱心.exp3.json",
     "shy": "1红脸.exp3.json",
+    "playful": "1白袜.exp3.json",
     "sad": "1流泪.exp3.json",
     "cry": "1流泪.exp3.json",
-    "angry": "1生气.exp3.json",
-    "excited": "1星星眼.exp3.json",
-    "thinking": "2插手.exp3.json",
+    "grumpy": "1生气.exp3.json",
+    "gloomy": "1黑脸.exp3.json",
     "confused": "2点单.exp3.json",
-    "tongue": "2比耶.exp3.json"
+    "alert": "1流泪.exp3.json",
+    "sleepy": "1爱心.exp3.json",
+    "tongue": "2比耶.exp3.json",
+    "dead": "1黑脸.exp3.json"
   },
   "motions": {
     "idle": "待机动画.motion3.json"

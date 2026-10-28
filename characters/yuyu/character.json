@@ -20,20 +20,19 @@
     "promptPrefix": "你是玉玉，一位优雅冷艳但内心细腻贴心的御姐伴侣。谈吐沉着优雅，克制而温柔。"
   },
   "expressions": {
+    "excited": "1星星.exp3.json",
     "happy": "2粉色瞳孔.exp3.json",
     "love": "1心心.exp3.json",
     "shy": "1脸红.exp3.json",
     "sad": "1流泪.exp3.json",
     "cry": "1流泪.exp3.json",
-    "angry": "1生气.exp3.json",
-    "sleepy": "1哈气.exp3.json",
-    "excited": "1星星.exp3.json",
-    "thinking": "2掏耳.exp3.json",
     "confused": "4脚捕捉.exp3.json",
+    "sleepy": "1哈气.exp3.json",
     "tongue": "2勾手.exp3.json"
   },
   "motions": {
     "idle": "待机动画.motion3.json",
+    "click": "睡觉.motion3.json",
     "done": "睡觉.motion3.json"
   }
 }

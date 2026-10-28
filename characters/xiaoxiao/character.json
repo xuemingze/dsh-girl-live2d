@@ -28,7 +28,8 @@
     "confused": "expression9.exp3.json",
     "sleepy": "expression13.exp3.json",
     "tongue": "expression13.exp3.json",
-    "dead": "expression13.exp3.json"
+    "dead": "expression13.exp3.json",
+    "angry": "expression10.exp3.json"
   },
   "motions": {
     "idle": "idle1.motion3.json",

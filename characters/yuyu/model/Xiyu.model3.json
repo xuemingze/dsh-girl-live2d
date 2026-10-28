@@ -1,146 +1,146 @@
 {
-  "Version": 3,
-  "FileReferences": {
-    "Moc": "Xiyu.moc3",
-    "Textures": [
-      "Xiyu.4096/texture_00.png",
-      "Xiyu.4096/texture_01.png",
-      "Xiyu.4096/texture_02.png",
-      "Xiyu.4096/texture_03.png",
-      "Xiyu.4096/texture_04.png",
-      "Xiyu.4096/texture_05.png",
-      "Xiyu.4096/texture_06.png",
-      "Xiyu.4096/texture_07.png",
-      "Xiyu.4096/texture_08.png",
-      "Xiyu.4096/texture_09.png",
-      "Xiyu.4096/texture_10.png",
-      "Xiyu.4096/texture_11.png",
-      "Xiyu.4096/texture_12.png",
-      "Xiyu.4096/texture_13.png",
-      "Xiyu.4096/texture_14.png",
-      "Xiyu.4096/texture_15.png",
-      "Xiyu.4096/texture_16.png",
-      "Xiyu.4096/texture_17.png"
-    ],
-    "Physics": "Xiyu.physics3.json",
-    "DisplayInfo": "Xiyu.cdi3.json",
-    "Expressions": [
-      {
-        "Name": "1不许看",
-        "File": "1不许看.exp3.json"
-      },
-      {
-        "Name": "1不许看2",
-        "File": "1不许看2.exp3.json"
-      },
-      {
-        "Name": "1哈气",
-        "File": "1哈气.exp3.json"
-      },
-      {
-        "Name": "1心心",
-        "File": "1心心.exp3.json"
-      },
-      {
-        "Name": "1星星",
-        "File": "1星星.exp3.json"
-      },
-      {
-        "Name": "1橙色瞳孔",
-        "File": "1橙色瞳孔.exp3.json"
-      },
-      {
-        "Name": "1流泪",
-        "File": "1流泪.exp3.json"
-      },
-      {
-        "Name": "1生气",
-        "File": "1生气.exp3.json"
-      },
-      {
-        "Name": "1脸红",
-        "File": "1脸红.exp3.json"
-      },
-      {
-        "Name": "1钱钱",
-        "File": "1钱钱.exp3.json"
-      },
-      {
-        "Name": "2勾手",
-        "File": "2勾手.exp3.json"
-      },
-      {
-        "Name": "2头纱",
-        "File": "2头纱.exp3.json"
-      },
-      {
-        "Name": "2掏耳",
-        "File": "2掏耳.exp3.json"
-      },
-      {
-        "Name": "2狐狸",
-        "File": "2狐狸.exp3.json"
-      },
-      {
-        "Name": "2粉色瞳孔",
-        "File": "2粉色瞳孔.exp3.json"
-      },
-      {
-        "Name": "2话筒",
-        "File": "2话筒.exp3.json"
-      },
-      {
-        "Name": "3射箭",
-        "File": "3射箭.exp3.json"
-      },
-      {
-        "Name": "3拉弓",
-        "File": "3拉弓.exp3.json"
-      },
-      {
-        "Name": "4脚捕捉",
-        "File": "4脚捕捉.exp3.json"
-      },
-      {
-        "Name": "俯身",
-        "File": "俯身.exp3.json"
-      },
-      {
-        "Name": "白发",
-        "File": "白发.exp3.json"
-      },
-      {
-        "Name": "脚点击",
-        "File": "脚点击.exp3.json"
-      },
-      {
-        "Name": "黑纱",
-        "File": "黑纱.exp3.json"
-      }
-    ],
-    "Motions": {
-      "待机动画": [
-        {
-          "File": "待机动画.motion3.json"
-        }
-      ],
-      "睡觉": [
-        {
-          "File": "睡觉.motion3.json"
-        }
-      ]
-    }
-  },
-  "Groups": [
-    {
-      "Target": "Parameter",
-      "Name": "EyeBlink",
-      "Ids": []
-    },
-    {
-      "Target": "Parameter",
-      "Name": "LipSync",
-      "Ids": []
-    }
-  ]
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "Xiyu.moc3",
+		"Textures": [
+			"Xiyu.4096/texture_00.png",
+			"Xiyu.4096/texture_01.png",
+			"Xiyu.4096/texture_02.png",
+			"Xiyu.4096/texture_03.png",
+			"Xiyu.4096/texture_04.png",
+			"Xiyu.4096/texture_05.png",
+			"Xiyu.4096/texture_06.png",
+			"Xiyu.4096/texture_07.png",
+			"Xiyu.4096/texture_08.png",
+			"Xiyu.4096/texture_09.png",
+			"Xiyu.4096/texture_10.png",
+			"Xiyu.4096/texture_11.png",
+			"Xiyu.4096/texture_12.png",
+			"Xiyu.4096/texture_13.png",
+			"Xiyu.4096/texture_14.png",
+			"Xiyu.4096/texture_15.png",
+			"Xiyu.4096/texture_16.png",
+			"Xiyu.4096/texture_17.png"
+		],
+		"Physics": "Xiyu.physics3.json",
+		"DisplayInfo": "Xiyu.cdi3.json",
+		"Expressions": [
+			{
+				"Name": "1不许看",
+				"File": "1不许看.exp3.json"
+			},
+			{
+				"Name": "1不许看2",
+				"File": "1不许看2.exp3.json"
+			},
+			{
+				"Name": "1哈气",
+				"File": "1哈气.exp3.json"
+			},
+			{
+				"Name": "1心心",
+				"File": "1心心.exp3.json"
+			},
+			{
+				"Name": "1星星",
+				"File": "1星星.exp3.json"
+			},
+			{
+				"Name": "1橙色瞳孔",
+				"File": "1橙色瞳孔.exp3.json"
+			},
+			{
+				"Name": "1流泪",
+				"File": "1流泪.exp3.json"
+			},
+			{
+				"Name": "1生气",
+				"File": "1生气.exp3.json"
+			},
+			{
+				"Name": "1脸红",
+				"File": "1脸红.exp3.json"
+			},
+			{
+				"Name": "1钱钱",
+				"File": "1钱钱.exp3.json"
+			},
+			{
+				"Name": "2勾手",
+				"File": "2勾手.exp3.json"
+			},
+			{
+				"Name": "2头纱",
+				"File": "2头纱.exp3.json"
+			},
+			{
+				"Name": "2掏耳",
+				"File": "2掏耳.exp3.json"
+			},
+			{
+				"Name": "2狐狸",
+				"File": "2狐狸.exp3.json"
+			},
+			{
+				"Name": "2粉色瞳孔",
+				"File": "2粉色瞳孔.exp3.json"
+			},
+			{
+				"Name": "2话筒",
+				"File": "2话筒.exp3.json"
+			},
+			{
+				"Name": "3射箭",
+				"File": "3射箭.exp3.json"
+			},
+			{
+				"Name": "3拉弓",
+				"File": "3拉弓.exp3.json"
+			},
+			{
+				"Name": "4脚捕捉",
+				"File": "4脚捕捉.exp3.json"
+			},
+			{
+				"Name": "俯身",
+				"File": "俯身.exp3.json"
+			},
+			{
+				"Name": "白发",
+				"File": "白发.exp3.json"
+			},
+			{
+				"Name": "脚点击",
+				"File": "脚点击.exp3.json"
+			},
+			{
+				"Name": "黑纱",
+				"File": "黑纱.exp3.json"
+			}
+		],
+		"Motions": {
+			"待机动画": [
+				{
+					"File": "待机动画.motion3.json"
+				}
+			],
+			"睡觉": [
+				{
+					"File": "睡觉.motion3.json"
+				}
+			]
+		}
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		}
+	]
 }
