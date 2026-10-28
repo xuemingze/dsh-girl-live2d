@@ -2451,7 +2451,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         onPositionChange: () => reportBoundsToShell(),
       })
       if (model) desktopRoamEngine.baseModelY = model.y
-      desktopRoamEngine.setRoaming(CFG.roamEnabled !== false)
+      if (typeof desktopRoamEngine.setRoaming === 'function') {
+        desktopRoamEngine.setRoaming(CFG.roamEnabled !== false)
+      }
     }
 
     if (DockAutoHideController && !dockAutoHide && ui.dock) {
@@ -3784,7 +3786,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         if (!dragging) return
         dragging = false
         if (dragMoved) {
-          if (desktopRoamEngine) {
+          if (desktopRoamEngine && typeof desktopRoamEngine.setAnchor === 'function') {
             const r = root.getBoundingClientRect()
             desktopRoamEngine.setAnchor(r.left, r.top)
           }
@@ -6580,7 +6582,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     roamBtn.addEventListener('click', () => {
       CFG.roamEnabled = CFG.roamEnabled === false ? true : false
       persistCfg()
-      if (desktopRoamEngine) desktopRoamEngine.setRoaming(CFG.roamEnabled)
+      if (desktopRoamEngine && typeof desktopRoamEngine.setRoaming === 'function') {
+        desktopRoamEngine.setRoaming(CFG.roamEnabled)
+      }
       roamBtn.textContent = CFG.roamEnabled ? '🐾 桌面漫步：开' : '🐾 桌面漫步：关'
       ui.bubble.show(CFG.roamEnabled ? '我可以自由溜达啦！' : '好，我乖乖待在原地～', { name: activeCharInfo().name, ttl: 2000 })
     })
@@ -6588,7 +6592,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     const recallBtn = $('button', 'dshp-btn', '📍 一键召回')
     recallBtn.title = '让桌宠立刻走回主人放置的锚点位置'
     recallBtn.addEventListener('click', () => {
-      if (desktopRoamEngine) {
+      if (desktopRoamEngine && typeof desktopRoamEngine.returnToAnchor === 'function') {
         desktopRoamEngine.returnToAnchor()
         ui.bubble.show('我回来啦～', { name: activeCharInfo().name, ttl: 2000 })
       }

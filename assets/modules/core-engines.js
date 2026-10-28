@@ -81,11 +81,22 @@ export class SpringPhysicsController {
 }
 
 export class FrameRateGovernor {
-  constructor(pixiApp, options = {}) {
-    this.app = pixiApp
-    this.idleDelayMs = options.idleDelayMs || 4000
-    this.normalFps = options.normalFps || 30
-    this.lowFps = options.lowFps || 15
+  constructor(appOrOptions = {}, maybeOptions = {}) {
+    let options = {}
+    let app = null
+    if (appOrOptions && (appOrOptions.ticker || appOrOptions.stage)) {
+      app = appOrOptions
+      options = maybeOptions || {}
+    } else {
+      options = appOrOptions || {}
+      app = options.app || null
+    }
+
+    this.app = app
+    this.onFpsChange = options.onFpsChange || null
+    this.idleDelayMs = options.idleTimeoutMs || options.idleDelayMs || 4000
+    this.normalFps = options.activeFps || options.normalFps || 30
+    this.lowFps = options.idleFps || options.lowFps || 15
     this.lastActivity = Date.now()
     this.isLow = false
     this.enabled = true
@@ -103,6 +114,9 @@ export class FrameRateGovernor {
     if (this.app && this.app.ticker) {
       this.app.ticker.maxFPS = this.normalFps
     }
+    if (typeof this.onFpsChange === 'function') {
+      this.onFpsChange(this.normalFps)
+    }
   }
 
   enterLowPower() {
@@ -110,10 +124,13 @@ export class FrameRateGovernor {
     if (this.app && this.app.ticker) {
       this.app.ticker.maxFPS = this.lowFps
     }
+    if (typeof this.onFpsChange === 'function') {
+      this.onFpsChange(this.lowFps)
+    }
   }
 
   update(now = Date.now()) {
-    if (!this.enabled || !this.app || !this.app.ticker) return
+    if (!this.enabled) return
     if (!this.isLow && now - this.lastActivity > this.idleDelayMs) {
       this.enterLowPower()
     }
@@ -131,9 +148,11 @@ export class DockAutoHideController {
   show() {
     if (!this.dock) return
     this.visible = true
-    this.dock.classList.add('dshp-dock-active')
-    this.dock.style.opacity = '1'
-    this.dock.style.pointerEvents = 'auto'
+    if (this.dock.classList) this.dock.classList.add('dshp-dock-active')
+    if (this.dock.style) {
+      this.dock.style.opacity = '1'
+      this.dock.style.pointerEvents = 'auto'
+    }
     this.touch()
   }
 
@@ -142,9 +161,11 @@ export class DockAutoHideController {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     this.visible = false
-    this.dock.classList.remove('dshp-dock-active')
-    this.dock.style.opacity = '0'
-    this.dock.style.pointerEvents = 'none'
+    if (this.dock.classList) this.dock.classList.remove('dshp-dock-active')
+    if (this.dock.style) {
+      this.dock.style.opacity = '0'
+      this.dock.style.pointerEvents = 'none'
+    }
   }
 
   touch() {

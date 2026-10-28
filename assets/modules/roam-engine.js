@@ -80,7 +80,7 @@ export class DesktopRoamEngine {
   constructor(options = {}) {
     this.stageEl = options.stageEl
     this.modelGetter = options.modelGetter
-    this.springCtrl = options.springCtrl
+    this.springCtrl = options.springController || options.springCtrl
     this.previewMotion = options.previewMotion
     this.resumeIdle = options.resumeIdle
     this.onPositionChange = options.onPositionChange
@@ -96,6 +96,8 @@ export class DesktopRoamEngine {
     this.y = options.initialY || 0
     this.targetX = this.x
     this.targetY = this.y
+    this.anchorX = this.x
+    this.anchorY = this.y
     this.speed = 100    // 像素/秒
 
     this.walkPhase = 0
@@ -151,8 +153,8 @@ export class DesktopRoamEngine {
   }
 
   getScreenBounds() {
-    const winW = window.innerWidth || 1920
-    const winH = window.innerHeight || 1080
+    const winW = typeof window !== 'undefined' ? (window.innerWidth || 1920) : 1920
+    const winH = typeof window !== 'undefined' ? (window.innerHeight || 1080) : 1080
     const pad = 24
     const petW = this.stageEl ? this.stageEl.offsetWidth || 180 : 180
     const petH = this.stageEl ? this.stageEl.offsetHeight || 180 : 180
@@ -171,7 +173,39 @@ export class DesktopRoamEngine {
     this.walkTo(randX, randY, 'patrol')
   }
 
+  setRoaming(enabled) {
+    this.enabled = !!enabled
+    if (!this.enabled && (this.state === 'WALKING' || this.state === 'RETURNING')) {
+      this.state = 'IDLE'
+      if (this.currentStrategy) {
+        this.currentStrategy.exit(this.getStrategyContext())
+        this.currentStrategy = null
+      }
+    }
+  }
+
+  setAnchor(x, y) {
+    this.anchorX = x
+    this.anchorY = y
+    this.x = x
+    this.y = y
+    this.targetX = x
+    this.targetY = y
+  }
+
+  returnToAnchor() {
+    if (this.anchorX != null && this.anchorY != null) {
+      this.walkTo(this.anchorX, this.anchorY, 'return')
+    } else {
+      this.recall()
+    }
+  }
+
   recall() {
+    if (this.anchorX != null && this.anchorY != null) {
+      this.walkTo(this.anchorX, this.anchorY, 'return')
+      return
+    }
     const bounds = this.getScreenBounds()
     this.walkTo(bounds.maxX - 10, bounds.maxY - 10, 'return')
   }
