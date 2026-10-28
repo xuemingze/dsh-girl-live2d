@@ -8,6 +8,9 @@ import json
 import logging
 import asyncio
 import re
+import sys
+import subprocess
+from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
@@ -41,6 +44,150 @@ AVAILABLE_VOICES = [
     {"id": "zh-HK-HiuMaanNeural", "name": "晓曼 (粤语甜美)", "gender": "female", "style": "cantonese"},
 ]
 
+
+
+import ctypes
+import ctypes.wintypes
+import psutil
+
+desktop_pid = None
+
+class _STARTUPINFOW(ctypes.Structure):
+    _fields_ = [
+        ('cb', ctypes.wintypes.DWORD),
+        ('lpReserved', ctypes.wintypes.LPWSTR),
+        ('lpDesktop', ctypes.wintypes.LPWSTR),
+        ('lpTitle', ctypes.wintypes.LPWSTR),
+        ('dwX', ctypes.wintypes.DWORD),
+        ('dwY', ctypes.wintypes.DWORD),
+        ('dwXSize', ctypes.wintypes.DWORD),
+        ('dwYSize', ctypes.wintypes.DWORD),
+        ('dwXCountChars', ctypes.wintypes.DWORD),
+        ('dwYCountChars', ctypes.wintypes.DWORD),
+        ('dwFillAttribute', ctypes.wintypes.DWORD),
+        ('dwFlags', ctypes.wintypes.DWORD),
+        ('wShowWindow', ctypes.wintypes.WORD),
+        ('cbReserved2', ctypes.wintypes.WORD),
+        ('lpReserved2', ctypes.c_void_p),
+        ('hStdInput', ctypes.wintypes.HANDLE),
+        ('hStdOutput', ctypes.wintypes.HANDLE),
+        ('hStdError', ctypes.wintypes.HANDLE),
+    ]
+
+class _PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ('hProcess', ctypes.wintypes.HANDLE),
+        ('hThread', ctypes.wintypes.HANDLE),
+        ('dwProcessId', ctypes.wintypes.DWORD),
+        ('dwThreadId', ctypes.wintypes.DWORD),
+    ]
+
+def _is_desktop_pid_running(pid):
+    if not pid:
+        return False
+    try:
+        p = psutil.Process(int(pid))
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        return False
+
+def get_dsh_host_pid():
+    """自动探查 Windows 上运行中的 DSH / nanomuse-desktop 主进程 PID"""
+    try:
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            name = (p.info.get('name') or '').lower()
+            cmd = ' '.join(p.info.get('cmdline') or []).lower()
+            if 'nanomuse' in name and any('--expose-internals' in arg for arg in (p.info.get('cmdline') or [])):
+                return p.info['pid']
+            if 'dsh' in cmd and 'node' in name:
+                return p.info['pid']
+    except Exception:
+        pass
+    return 0
+
+def launch_desktop(port=59684, host_pid=0):
+    global desktop_pid
+    if _is_desktop_pid_running(desktop_pid):
+        return {"ok": True, "status": "already_running", "pid": desktop_pid}
+
+    token = ""
+    token_file = Path.home() / ".dsh" / "dsh-live2d-pet-desktop.json"
+    try:
+        if token_file.exists():
+            data = json.loads(token_file.read_text(encoding="utf-8"))
+            token = data.get("token", "")
+            data["port"] = port
+            token_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.error(f"Error reading/writing token file: {e}")
+
+    if not host_pid:
+        host_pid = get_dsh_host_pid()
+
+    launcher_path = Path(__file__).resolve().parent.parent / "desktop" / "desktop_launcher.py"
+    exec_bin = str(Path(sys.executable))
+
+    try:
+        if os.name == 'nt':
+            si = _STARTUPINFOW()
+            si.cb = ctypes.sizeof(_STARTUPINFOW)
+            # 强制指定用户真实交互桌面 WinSta0\Default，并使用 CREATE_NO_WINDOW 脱离沙箱控制台
+            si.lpDesktop = r"WinSta0\Default".replace("\\\\", "\\")
+            pi = _PROCESS_INFORMATION()
+            cmd_line = f'"{exec_bin}" "{launcher_path}" --port {port} --token "{token}" --host-pid {host_pid}'
+            CREATE_NO_WINDOW = 0x08000000
+            ok = ctypes.windll.kernel32.CreateProcessW(
+                None,
+                ctypes.create_unicode_buffer(cmd_line),
+                None,
+                None,
+                False,
+                CREATE_NO_WINDOW,
+                None,
+                None,
+                ctypes.byref(si),
+                ctypes.byref(pi),
+            )
+            if not ok:
+                err_code = ctypes.windll.kernel32.GetLastError()
+                raise RuntimeError(f"CreateProcessW failed with error {err_code}")
+            desktop_pid = int(pi.dwProcessId)
+            ctypes.windll.kernel32.CloseHandle(pi.hThread)
+            ctypes.windll.kernel32.CloseHandle(pi.hProcess)
+        else:
+            proc = subprocess.Popen([exec_bin, str(launcher_path), "--port", str(port), "--token", str(token), "--host-pid", str(host_pid)])
+            desktop_pid = proc.pid
+
+        logger.info(f"[TTS Service] 已在 WinSta0\\Default 启动独立桌面常驻窗口: PID={desktop_pid}, port={port}, host_pid={host_pid}")
+        return {"ok": True, "status": "launched", "pid": desktop_pid}
+    except Exception as e:
+        logger.error(f"[TTS Service] 启动桌面常驻窗口失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+def close_desktop():
+    global desktop_pid
+    if _is_desktop_pid_running(desktop_pid):
+        try:
+            p = psutil.Process(int(desktop_pid))
+            for ch in p.children(recursive=True):
+                try:
+                    ch.kill()
+                except Exception:
+                    pass
+            p.kill()
+        except Exception:
+            pass
+        desktop_pid = None
+        return {"ok": True, "status": "closed"}
+    desktop_pid = None
+    return {"ok": True, "status": "not_running"}
+
+def get_desktop_status():
+    global desktop_pid
+    is_running = _is_desktop_pid_running(desktop_pid)
+    if not is_running:
+        desktop_pid = None
+    return {"ok": True, "running": is_running, "pid": desktop_pid if is_running else None}
 
 def resolve_voice_from_prompt(prompt: str, base_voice: str = DEFAULT_VOICE):
     """
@@ -177,6 +324,18 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
         if origin != "*":
             self.send_header("Access-Control-Allow-Credentials", "true")
 
+    def _send_json(self, code: int, obj: dict):
+        try:
+            self.send_response(code)
+            self._send_cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            logger.warning(f"Error sending json response: {e}")
+
     def _send_error_json(self, code: int, message: str):
         try:
             self.send_response(code)
@@ -202,6 +361,8 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(b'{"status": "ok", "service": "dsh-girl-live2d TTS Service"}')
+        elif clean_path in ("/desktop/status", "/dsh-pet/desktop/status"):
+            self._send_json(200, get_desktop_status())
         elif self.path.startswith(("/voices_pool/", "/dsh-pet/voices_pool/")):
             rel_part = self.path.split("/voices_pool/", 1)[-1].split("?")[0]
             from urllib.parse import unquote
@@ -266,7 +427,21 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         clean_path = self.path.split("?")[0].rstrip("/") or "/"
-        if self.path.startswith("/tts"):
+        if clean_path in ("/desktop/launch", "/dsh-pet/desktop/launch"):
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body_bytes = self.rfile.read(content_length) if content_length > 0 else b"{}"
+                payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except Exception:
+                payload = {}
+            port = payload.get("port") or 59684
+            host_pid = payload.get("hostPid") or 0
+            res = launch_desktop(port=int(port), host_pid=int(host_pid))
+            self._send_json(200, res)
+        elif clean_path in ("/desktop/close", "/dsh-pet/desktop/close"):
+            res = close_desktop()
+            self._send_json(200, res)
+        elif self.path.startswith("/tts"):
             self._handle_tts()
         elif self.path.startswith(("/generate_voice", "/generate-voice", "/dsh-pet/generate-voice")):
             self._handle_generate_voice()

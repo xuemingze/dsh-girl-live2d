@@ -1,5 +1,30 @@
 # 更新日志 / Changelog
 
+## 1.0.16 — 2026-10-28
+
+> **English Summary**
+>
+> **Independent Desktop Detachment & Always-on-Top Shell (`WinSta0\Default`)**:
+> 1. **One-Click Detach from Client (`[🖥️ 脱离客户端 · 独立桌面常驻]`)**: Added a direct toggle in the Settings `Host` row to detach the Live2D companion from the DSH client window onto the native Windows desktop (`PySide6` + `QWebEngineView` borderless transparent topmost window).
+> 2. **Minimize-Resilient & Background Dialogue**: When the DSH client is minimized, the companion remains visible and interactive on the desktop with full dialogue, streaming speech bubbles, TTS voice playback, lip-sync, and Live2D motions while the DSH client stays hidden in the background without stealing focus.
+> 3. **Lifecycle Watchdog & Instant Recall**: Automatically terminates the desktop shell within 500ms when the DSH client exits (`OpenProcess` PID watchdog + HTTP heartbeat). While detached, the in-client pet hides completely (`opacity: 0`) and displays a floating restore pill (`🖥️ 已在独立桌面常驻 · 点击收回客户端`).
+> 4. **Dynamic HWND Pixel-Level Click-Through & Cross-Desktop Projection**: Dynamically tracks recreated `QtWebEngine` native `HWND` handles for `WS_EX_TRANSPARENT` click-through and forces `WinSta0\Default` desktop projection via Win32 `CreateProcessW`.
+
+### 🖥️ 脱离客户端 · 独立桌面常驻渲染与跨桌面穿透引擎
+
+1. **一键脱离客户端独立常驻（`[🖥️ 脱离客户端 · 独立桌面常驻]`）**：
+   - 在「设置」面板「宿主」行「网页版」按钮后新增 `[🖥️ 脱离客户端 · 独立桌面常驻]`（独立桌面内显示为 `[📥 收回至客户端渲染]`）；
+   - 基于 `PySide6` (`QWebEngineView`) 构建无边框、全透明、置顶（`WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST`）独立桌面渲染器，自动贴合主屏幕可用工作区（`availableGeometry`），绝不触发 Windows DWM 全屏独占黑屏。
+2. **客户端最小化后台无感联通**：
+   - DSH 客户端最小化后，桌宠依然常驻系统桌面；
+   - 点击互动、快捷对话、流式气泡、TTS 语音伴读、口型同步与动作表情全部通过本地 HTTP + SSE 实时联通，对话全程客户端保持后台隐藏不弹窗、不抢焦点。
+3. **宿主共生守护与一键收回**：
+   - 内置 500ms 宿主进程 PID 探针（Win32 `OpenProcess`）与 `/dsh-pet/state` 双重守护，客户端关闭或强退时独立桌面窗口同步秒关；
+   - 脱离期间客户端内桌宠完全隐去（`opacity: 0`），并在右下角提供 `🖥️ 已在独立桌面常驻 · 点击收回客户端` 悬浮胶囊与 1.5s 状态同步轮询。
+4. **动态 HWND 像素级鼠标穿透与跨桌面投射**：
+   - 动态获取 `QWebEngineView` 重建后的实时 `HWND` 切换 `WS_EX_TRANSPARENT`，空白区域 100% 穿透点击桌面图标与底部软件，悬停角色或按钮时自动唤醒交互与工具栏；
+   - 支持 `/dsh-pet/desktop/*` 与 `9880` 语音引擎双通道回退，并通过 Win32 `CreateProcessW` 显式绑定 `WinSta0\Default` 真实用户桌面。
+
 ## 1.0.15 — 2026-10-28
 
 ### 🌟 气泡防锁死机制与工作状态交互语音全面升级

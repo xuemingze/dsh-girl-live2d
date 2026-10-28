@@ -32,6 +32,118 @@
   if (window.__DSH_PET_LOADED__) return
   window.__DSH_PET_LOADED__ = true
 
+  const isStandalone = typeof window !== 'undefined' && (
+    !!window.__DSHPET_DESKTOP__ ||
+    (window.location && window.location.pathname.indexOf('/dsh-pet/standalone') !== -1) ||
+    /[?&]source=desktop/.test(typeof window !== 'undefined' && window.location ? window.location.search : '')
+  )
+
+  async function requestDesktopLaunchGlobal() {
+    const payload = JSON.stringify({
+      port: Number(window.location.port) || 59684,
+    })
+    try {
+      const res = await fetch('/dsh-pet/desktop/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+      if (res.ok) {
+        const txt = await res.text()
+        if (txt) {
+          try { return JSON.parse(txt) } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
+    const res2 = await fetch('http://127.0.0.1:9880/desktop/launch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    })
+    const txt2 = await res2.text()
+    if (txt2) {
+      try { return JSON.parse(txt2) } catch (e) {}
+    }
+    return { ok: false, error: txt2 || `HTTP ${res2.status}` }
+  }
+
+  async function requestDesktopCloseGlobal() {
+    try {
+      const res = await fetch('/dsh-pet/desktop/close', { method: 'POST' })
+      if (res.ok) {
+        const txt = await res.text()
+        if (txt) {
+          try { return JSON.parse(txt) } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
+    try {
+      const res2 = await fetch('http://127.0.0.1:9880/desktop/close', { method: 'POST' })
+      const txt2 = await res2.text()
+      if (txt2) {
+        try { return JSON.parse(txt2) } catch (e) {}
+      }
+    } catch (e) {}
+    return { ok: true }
+  }
+
+  async function requestDesktopStatusGlobal() {
+    try {
+      const res = await fetch('/dsh-pet/desktop/status')
+      if (res.ok) {
+        const txt = await res.text()
+        if (txt) {
+          try { return JSON.parse(txt) } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
+    try {
+      const res2 = await fetch('http://127.0.0.1:9880/desktop/status')
+      if (res2.ok) {
+        const txt2 = await res2.text()
+        if (txt2) {
+          try { return JSON.parse(txt2) } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    return { ok: true, running: false }
+  }
+
+  let isClientDetached = false
+  let detachedPollTimer = null
+  function setClientDetached(val) {
+    isClientDetached = !!val
+    if (isStandalone) return
+    if (isClientDetached) {
+      document.body.classList.add('dshp-client-detached')
+      if (ui && ui.root) ui.root.classList.add('dshp-client-detached')
+      if (typeof stopCurrentAudio === 'function') stopCurrentAudio()
+      if (!detachedPollTimer) {
+        detachedPollTimer = setInterval(async () => {
+          try {
+            const st = await requestDesktopStatusGlobal()
+            if (st && st.ok && !st.running) {
+              setClientDetached(false)
+            }
+          } catch (e) {}
+        }, 1500)
+      }
+    } else {
+      document.body.classList.remove('dshp-client-detached')
+      if (ui && ui.root) ui.root.classList.remove('dshp-client-detached')
+      if (detachedPollTimer) {
+        clearInterval(detachedPollTimer)
+        detachedPollTimer = null
+      }
+    }
+    if (window.__dshpUpdateDetachBtn) {
+      window.__dshpUpdateDetachBtn(isClientDetached)
+    }
+  }
+
   const BOOT = window.__DSH_PET_BOOT__ || {}
   const CFG = Object.assign(
     {
@@ -471,6 +583,7 @@
   async function speakCharacterText(text, charId = activeCharacterId, { isTap = false } = {}) {
     if (!text || CFG.sound === false) return
     if (isTap && CFG.tapVoice === false) return
+    if (isClientDetached && !isStandalone) return
     const char = CHARACTERS[charId] || {}
     const charVoice = char.voice || {}
     try {
@@ -1432,6 +1545,8 @@
 .dshp-bubble,.dshp-report-text{user-select:text;-webkit-user-select:text}
 
 .dshp-root.dshp-hidden{opacity:0;pointer-events:none!important}
+.dshp-root.dshp-client-detached{opacity:0!important;pointer-events:none!important}
+body.dshp-client-detached .dshp-detached-pill{display:flex}
 /* 恢复用的把手挂在 body 上、不在 .dshp-root 里，所以这里必须是 body 级类：
    用后代选择器会永远匹配不到，隐藏之后就再也找不回来了。 */
 body.dshp-pet-hidden .dshp-tab{display:flex}
@@ -1676,6 +1791,13 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   box-shadow:0 6px 18px rgba(10,14,30,.28);transition:transform .12s ease;
   display:none;align-items:center;gap:6px;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+.dshp-detached-pill{position:fixed;right:16px;bottom:16px;z-index:2147483002;pointer-events:auto;cursor:pointer;
+  border:1px solid rgba(123,155,255,.38);background:rgba(18,26,48,.92);color:#eaf0ff;
+  border-radius:20px;padding:7px 14px;font-size:12px;font-weight:600;
+  box-shadow:0 6px 18px rgba(10,14,30,.32);transition:transform .12s ease,background .15s ease;
+  display:none;align-items:center;gap:6px;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+.dshp-detached-pill:hover{transform:translateY(-1px);background:rgba(36,52,96,.96)}
 `
 
   // ——————————————————————————————————————————————————————————————
@@ -3218,6 +3340,22 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     biasTarget: 0,
   }
 
+  function feedPointer(x, y) {
+    gaze.pointer.x = x
+    gaze.pointer.y = y
+    gaze.pointer.seen = true
+    gaze.pointer.at = performance.now()
+    if (frameRateGovernor) frameRateGovernor.touch()
+    try {
+      if (ui && ui.root) {
+        const on = hitTest(x, y) || overDock(x, y)
+        if (on) {
+          ui.root.classList.add('dshp-hover')
+        }
+      }
+    } catch (e) {}
+  }
+
   /**
    * 爱心粒子。模型自带左右两组爱心（爱心左 j1–j32 / 爱心右 j33–j57），
    * 而 `love` 和 `ParamCheek73` 属于「通用动画(循环)」组——置 1 就会一直循环冒爱心，
@@ -3445,7 +3583,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     try {
       const oldRoot = document.getElementById('dsh-live2d-pet')
       if (oldRoot) oldRoot.remove()
-      const oldTabs = document.querySelectorAll('.dshp-tab')
+      const oldTabs = document.querySelectorAll('.dshp-tab,.dshp-detached-pill')
       oldTabs.forEach((el) => el.remove())
     } catch (e) {}
 
@@ -3521,8 +3659,18 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     )
     addCloseButton(hud, () => closeHud())
 
+    const detachedPill = $('div', 'dshp-detached-pill', '🖥️ 已在独立桌面常驻 · 点击收回客户端')
+    detachedPill.title = '桌宠已脱离客户端并在桌面独立常驻，点击此处可收回客户端内渲染'
+    detachedPill.addEventListener('click', async () => {
+      await requestDesktopCloseGlobal()
+      setClientDetached(false)
+      if (ui && ui.bubble) {
+        ui.bubble.show('已收回至客户端内渲染啦～', { name: activeCharInfo().name, ttl: 2500 })
+      }
+    })
+
     root.append(stage, bubbleEl, dock, composer, menu, hud)
-    document.body.append(root, tab)
+    document.body.append(root, tab, detachedPill)
 
     const u = {
       root,
@@ -3563,9 +3711,18 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     // 这里不能调 setHidden()——此刻 ui 还没赋值（ui = buildUI() 才刚返回），
     // setHidden 里读 ui.root 会直接抛异常，表现为「隐藏过一次之后，
     // 以后每次打开都起不来」。所以就地写类名。
-    if (readLayout().hidden) {
+    if (readLayout().hidden && !isStandalone) {
       root.classList.add('dshp-hidden')
       document.body.classList.add('dshp-pet-hidden')
+    }
+    if (!isStandalone) {
+      requestDesktopStatusGlobal()
+        .then((st) => {
+          if (st && st.ok && st.running) {
+            setClientDetached(true)
+          }
+        })
+        .catch(() => {})
     }
     return u
   }
@@ -8167,7 +8324,93 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
       return [v, b]
     })
-    hostRow.append(...hostBtns.map(([, b]) => b))
+    // 🖥️ 独立桌面常驻按键（网页版后面位置）
+    const detachBtn = $('button', 'dshp-btn', '🖥️ 脱离客户端 · 独立桌面常驻')
+
+    function updateDetachBtnUI(running) {
+      if (isStandalone) {
+        detachBtn.textContent = '📥 收回至客户端渲染'
+        detachBtn.classList.add('dshp-primary')
+        detachBtn.title = '当前窗口正在桌面独立常驻运行（客户端最小化仍可互动），点击可收回至客户端'
+        return
+      }
+      if (running) {
+        detachBtn.textContent = '📥 收回至客户端渲染'
+        detachBtn.classList.add('dshp-primary')
+        detachBtn.title = '点击关闭桌面独立常驻窗口，恢复在客户端内渲染'
+      } else {
+        detachBtn.textContent = '🖥️ 脱离客户端 · 独立桌面常驻'
+        detachBtn.classList.remove('dshp-primary')
+        detachBtn.title = '脱离客户端，在桌面透明独立常驻渲染（即使客户端最小化依然保留在桌面）'
+      }
+    }
+
+    window.__dshpUpdateDetachBtn = (running) => {
+      updateDetachBtnUI(running)
+    }
+
+    detachBtn.addEventListener('click', async () => {
+      if (isStandalone) {
+        detachBtn.disabled = true
+        detachBtn.textContent = '⏳ 正在收回...'
+        await requestDesktopCloseGlobal()
+        try { window.close() } catch (e) {}
+        return
+      }
+      detachBtn.disabled = true
+      try {
+        if (isClientDetached) {
+          detachBtn.textContent = '⏳ 正在收回...'
+          const r = await requestDesktopCloseGlobal()
+          if (r && r.ok) {
+            setClientDetached(false)
+            updateDetachBtnUI(false)
+            ui.bubble.show('已收回至客户端内渲染啦～', { name: activeCharInfo().name, ttl: 2500 })
+          } else {
+            updateDetachBtnUI(true)
+          }
+        } else {
+          detachBtn.textContent = '⏳ 正在脱离...'
+          const r = await requestDesktopLaunchGlobal()
+          if (r && r.ok) {
+            closePanels()
+            setClientDetached(true)
+            updateDetachBtnUI(true)
+          } else {
+            updateDetachBtnUI(false)
+            ui.bubble.show('启动独立桌面常驻失败：' + ((r && r.error) || '未知错误'), {
+              name: activeCharInfo().name,
+              ttl: 3000,
+            })
+          }
+        }
+      } catch (err) {
+        updateDetachBtnUI(isClientDetached)
+        ui.bubble.show('脱离请求失败：' + (err && err.message ? err.message : String(err)), {
+          name: activeCharInfo().name,
+          ttl: 3000,
+        })
+      } finally {
+        detachBtn.disabled = false
+      }
+    })
+
+    hostRow.append(...hostBtns.map(([, b]) => b), detachBtn)
+
+    // 初始化按钮显示
+    if (isStandalone) {
+      updateDetachBtnUI(true)
+    } else {
+      updateDetachBtnUI(isClientDetached)
+      requestDesktopStatusGlobal()
+        .then((st) => {
+          if (st && st.ok) {
+            setClientDetached(!!st.running)
+            updateDetachBtnUI(!!st.running)
+          }
+        })
+        .catch(() => {})
+    }
     const hostHint = $('div', 'dshp-hint', '当前：' + hostNow + (shell.on ? '' : '（网页版里改不了，去桌面客户端改）'))
     // 壳子加载后会调 DSHPet.setHostPref() 告诉我们它记着的是哪一档
     window.__dshpSetHostPref = (v) => {
@@ -8359,6 +8602,12 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
   function handleEvent(m) {
     switch (m.t) {
+      case 'desktop_state':
+        if (typeof m.running === 'boolean' && !isStandalone) {
+          setClientDetached(m.running)
+        }
+        break
+
       case 'character-changed':
         if (m.characterId && m.characterId !== activeCharacterId && m.characterId !== switchingCharId && CHARACTERS[m.characterId]) {
           switchCharacter(m.characterId)
@@ -8839,6 +9088,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     clearProps,
     playMotion,
     hitTest,
+    feedPointer,
     /** 隐藏 / 恢复。壳子（桌面版）收起成小球后，靠它把页面里的状态一起改回来 */
     setHidden,
     /** 壳子告诉页面「你记着的连接档位是哪一档」（设置页据此高亮） */

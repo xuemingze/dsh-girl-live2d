@@ -28,11 +28,47 @@
     "cry": "1流泪.exp3.json",
     "confused": "4脚捕捉.exp3.json",
     "sleepy": "1哈气.exp3.json",
-    "tongue": "2勾手.exp3.json"
+    "tongue": "2勾手.exp3.json",
+    "angry": "1生气.exp3.json"
   },
   "motions": {
     "idle": "待机动画.motion3.json",
     "click": "睡觉.motion3.json",
     "done": "睡觉.motion3.json"
+  },
+  "categories": {
+    "decor": [
+      "1橙色瞳孔.exp3.json",
+      "2头纱.exp3.json",
+      "2粉色瞳孔.exp3.json",
+      "白发.exp3.json",
+      "黑纱.exp3.json"
+    ],
+    "scene": [
+      "2狐狸.exp3.json",
+      "2话筒.exp3.json"
+    ],
+    "action": [
+      "待机动画.motion3.json",
+      "睡觉.motion3.json",
+      "2勾手.exp3.json",
+      "2掏耳.exp3.json",
+      "3射箭.exp3.json",
+      "3拉弓.exp3.json",
+      "4脚捕捉.exp3.json",
+      "俯身.exp3.json",
+      "脚点击.exp3.json"
+    ],
+    "emotion": [
+      "1不许看.exp3.json",
+      "1不许看2.exp3.json",
+      "1哈气.exp3.json",
+      "1心心.exp3.json",
+      "1星星.exp3.json",
+      "1流泪.exp3.json",
+      "1生气.exp3.json",
+      "1脸红.exp3.json",
+      "1钱钱.exp3.json"
+    ]
   }
 }

@@ -29,9 +29,49 @@
     "alert": "1流泪.exp3.json",
     "sleepy": "1爱心.exp3.json",
     "tongue": "2比耶.exp3.json",
-    "dead": "1黑脸.exp3.json"
+    "dead": "1黑脸.exp3.json",
+    "angry": "1生气.exp3.json"
   },
   "motions": {
     "idle": "待机动画.motion3.json"
+  },
+  "categories": {
+    "decor": [
+      "1白袜.exp3.json",
+      "3棕发.exp3.json",
+      "3白发.exp3.json",
+      "3粉发.exp3.json",
+      "3金发.exp3.json",
+      "4后发长度1.exp3.json",
+      "4后发长度2.exp3.json",
+      "丝袜带子.exp3.json",
+      "双马尾.exp3.json",
+      "发带.exp3.json",
+      "变小.exp3.json",
+      "紫色.exp3.json",
+      "蓝色.exp3.json"
+    ],
+    "scene": [
+      "2奶茶.exp3.json",
+      "2菜单.exp3.json",
+      "2餐盘右.exp3.json",
+      "2餐盘左.exp3.json"
+    ],
+    "action": [
+      "待机动画.motion3.json",
+      "2插手.exp3.json",
+      "2比耶.exp3.json",
+      "2点单.exp3.json",
+      "点击.exp3.json"
+    ],
+    "emotion": [
+      "1星星眼.exp3.json",
+      "1流泪.exp3.json",
+      "1爱心.exp3.json",
+      "1生气.exp3.json",
+      "1红脸.exp3.json",
+      "1钱钱.exp3.json",
+      "1黑脸.exp3.json"
+    ]
   }
 }
