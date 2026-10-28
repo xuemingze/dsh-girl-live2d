@@ -173,6 +173,22 @@ export class DesktopRoamEngine {
     this.walkTo(randX, randY, 'patrol')
   }
 
+  setBlocked(blocked, reason = 'ui') {
+    const b = !!blocked
+    if (this.isBlockedByUI === b) return
+    this.isBlockedByUI = b
+    if (this.isBlockedByUI) {
+      if (this.state === 'WALKING' || this.state === 'RETURNING') {
+        this.pause(reason)
+      }
+      this.nextPatrolTime = Date.now() + 25000
+    } else {
+      if (this.state === 'PAUSED' && (this.pausedReason === 'ui' || this.pausedReason === 'hover' || this.pausedReason === 'setting' || this.pausedReason === 'menu')) {
+        this.resume()
+      }
+    }
+  }
+
   setRoaming(enabled) {
     this.enabled = !!enabled
     if (!this.enabled && (this.state === 'WALKING' || this.state === 'RETURNING')) {
@@ -246,8 +262,15 @@ export class DesktopRoamEngine {
   }
 
   step(dt) {
-    if (!this.enabled) return
+    if (!this.enabled || this.isBlockedByUI) {
+      this.nextPatrolTime = Math.max(this.nextPatrolTime, Date.now() + 25000)
+      return
+    }
     const now = Date.now()
+    if (this.state === 'PAUSED') {
+      this.nextPatrolTime = Math.max(this.nextPatrolTime, now + 25000)
+      return
+    }
 
     // 空闲定时巡逻
     if (this.state === 'IDLE' && now >= this.nextPatrolTime) {

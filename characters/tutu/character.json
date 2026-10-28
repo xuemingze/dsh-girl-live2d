@@ -11,9 +11,9 @@
   },
   "voice": {
     "voice_name": "zh-CN-XiaoyiNeural",
-    "prompt": "甜美活泼少女，元气满满",
-    "rate": "+5%",
-    "pitch": "+2Hz",
+    "prompt": "萝莉音",
+    "rate": "+0%",
+    "pitch": "+6Hz",
     "referenceAudio": "voice_engine/voices_pool/tianmei_shaonv.wav",
     "referenceText": "嗯~~",
     "engine": "edge-tts"

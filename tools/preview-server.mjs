@@ -374,6 +374,26 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  if (url === '/dsh-pet/init-default-samples') {
+    const defaultDir = path.join(ROOT, 'voice_engine', 'default_samples')
+    let count = 0
+    try {
+      if (fs.existsSync(defaultDir)) {
+        for (const f of fs.readdirSync(defaultDir)) {
+          if (f.endsWith('.wav')) {
+            const srcP = path.join(defaultDir, f)
+            const dstP = path.join(VOICES_POOL_DIR, f)
+            if (!fs.existsSync(dstP)) {
+              fs.copyFileSync(srcP, dstP)
+              count++
+            }
+          }
+        }
+      }
+    } catch (e) {}
+    return send(res, 200, MIME['.json'], JSON.stringify({ ok: true, restoredCount: count }))
+  }
+
   if (url === '/dsh-pet/generate-voice') {
     const handleVoice = async (j) => {
       try {
