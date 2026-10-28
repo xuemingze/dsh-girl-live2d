@@ -8,11 +8,13 @@
 export function extractCompanionVoiceText(rawText, characterId = 'whale') {
   if (!rawText || typeof rawText !== 'string') return ''
 
-  // 1. 彻底剔除思考链和不可读语法块
+  // 1. 彻底剔除思考链和不可读语法块（支持未闭合流式思考）
   let text = rawText
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<analysis>[\s\S]*?<\/analysis>/gi, '')
-    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
+    .replace(/<thought>[\s\S]*?(?:<\/thought>|$)/gi, '')
+    .replace(/<analysis>[\s\S]*?(?:<\/analysis>|$)/gi, '')
+    .replace(/<reasoning>[\s\S]*?(?:<\/reasoning>|$)/gi, '')
+    .replace(/:::thinking[\s\S]*?(?::::|$)/gi, '')
     .replace(/```[\s\S]*?```/gi, '代码块')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[.*?\]\(.*?\)/g, '')
@@ -28,8 +30,8 @@ export function extractCompanionVoiceText(rawText, characterId = 'whale') {
   }
 
   // 3. 针对不同类型的长文场景，提取伴侣专属口述摘要
-  // 场景 A: 包含代码生成
-  if (/代码|function|def |class |const |import |npm |pip /i.test(rawText)) {
+  // 场景 A: 包含代码生成（基于清洗后的正文匹配，避免思考块误判）
+  if (/代码|function|def |class |const |import |npm |pip /i.test(text)) {
     const codePhrases = {
       tutu: '主人，核心代码已经为你写好啦，快看看屏幕气泡里的代码块吧~',
       yuyu: '代码已经整理完毕，重点逻辑已呈现在屏幕面板中。',

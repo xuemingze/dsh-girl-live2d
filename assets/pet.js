@@ -52,6 +52,18 @@
   const LS_KEY = 'dsh-live2d-pet:layout'
   const DESK_TOKEN = (BOOT && BOOT.token) || ''
 
+  /** 彻底剔除思考内容（<think>、<thought>、<reasoning> 标签及未闭合的前置思考链） */
+  function stripThinking(text) {
+    if (!text || typeof text !== 'string') return ''
+    return text
+      .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
+      .replace(/<thought>[\s\S]*?(?:<\/thought>|$)/gi, '')
+      .replace(/<reasoning>[\s\S]*?(?:<\/reasoning>|$)/gi, '')
+      .replace(/<analysis>[\s\S]*?(?:<\/analysis>|$)/gi, '')
+      .replace(/:::thinking[\s\S]*?(?::::|$)/gi, '')
+      .trim()
+  }
+
   async function apiFetch(url, opt = {}) {
     const headers = Object.assign({}, opt.headers || {})
     if (opt.body && !headers['Content-Type'] && typeof opt.body === 'string') {
@@ -3213,11 +3225,17 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             streaming = true
           }
           buffer += text
-          body.textContent = buffer.length > 4000 ? '…' + buffer.slice(-4000) : buffer
+          const displayBuf = stripThinking(buffer)
+          if (!displayBuf && (buffer.includes('<think>') || buffer.includes('<thought>'))) {
+            body.textContent = '思考中…'
+          } else {
+            body.textContent = displayBuf.length > 4000 ? '…' + displayBuf.slice(-4000) : displayBuf
+          }
         } else {
           streaming = false
           buffer = String(text == null ? '' : text)
-          body.textContent = buffer
+          const displayBuf = stripThinking(buffer)
+          body.textContent = displayBuf
         }
         body.scrollTop = body.scrollHeight
         foot.textContent = opts.foot || ''
@@ -3289,10 +3307,11 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     return d.getMonth() + 1 + '月' + d.getDate() + '日 ' + hm
   }
 
-  /** 推一条工作简报：头顶出现信封；同一份内容不重复塞 */
+  /** 推一条工作简报：头顶出现信封；同一份内容不重复塞，彻底剔除思考内容 */
   function pushReport(title, body) {
     try {
-      const text = String(body == null ? '' : body).trim()
+      let text = String(body == null ? '' : body).trim()
+      text = stripThinking(text)
       if (!text) return
       const key = title + '|' + text
       if (key === lastReportKey) return
@@ -6597,10 +6616,13 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         rig.talking = false
         if (m.interrupted) break
         if (m.text) {
-          setStatus('speaking')
-          agent.lastText = m.text.slice(0, 4000)
-          ui.bubble.show(agent.lastText, { name: activeCharInfo().name, sticky: true })
-          if (agent.lastText && agent.lastText.length > 60) pushReport('任务简报', agent.lastText)
+          const cleanAssistantText = stripThinking(m.text)
+          if (cleanAssistantText) {
+            setStatus('speaking')
+            agent.lastText = cleanAssistantText.slice(0, 4000)
+            ui.bubble.show(agent.lastText, { name: activeCharInfo().name, sticky: true })
+            if (agent.lastText && agent.lastText.length > 40) pushReport('任务简报', agent.lastText)
+          }
           // 伴侣口播语音统一由服务端智能摘要后广播 voice-speech 事件驱动播放，避免前端重复触发合成导致重音回声
         }
         if (m.usage) {
