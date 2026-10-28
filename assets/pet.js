@@ -304,7 +304,7 @@
         await audioCtx.resume().catch(() => {})
       }
 
-      const vol = Math.max(0, Math.min(1, Number(CFG.ttsVolume ?? 1.0)))
+      const vol = Math.max(0.1, Math.min(1, Number(CFG.ttsVolume ?? 1.0) || 1.0))
 
       // 1. 安全获取音频二进制数据（自动处理鉴权 Header、多端口与编解码容错）
       let blob = null
@@ -312,25 +312,40 @@
       const fetchHeaders = {}
       if (DESK_TOKEN) fetchHeaders['x-dsh-pet-desk'] = DESK_TOKEN
 
-      const candidateUrls = [url]
+      // 智能解析文件名，建立多候选加载路径
+      let fileName = ''
       if (typeof url === 'string') {
-        if (url.startsWith('/dsh-pet/voices_pool/')) {
-          const rawRel = url.slice('/dsh-pet/voices_pool/'.length)
-          candidateUrls.push('http://127.0.0.1:9880/voices_pool/' + rawRel)
-          candidateUrls.push('/dsh-pet/voices_pool/' + decodeURIComponent(rawRel))
-        } else if (url.startsWith('http://127.0.0.1:9880/voices_pool/')) {
-          const rawRel = url.slice('http://127.0.0.1:9880/voices_pool/'.length)
-          candidateUrls.push('/dsh-pet/voices_pool/' + rawRel)
+        const clean = url.split('?')[0].split('#')[0]
+        if (clean.includes('/voices_pool/')) {
+          fileName = clean.split('/voices_pool/').pop()
+        } else if (clean.includes('voices_pool/')) {
+          fileName = clean.split('voices_pool/').pop()
+        } else if (!clean.includes('/')) {
+          fileName = clean
         }
+      }
+      try { fileName = decodeURIComponent(fileName) } catch (e) {}
+
+      const candidateUrls = []
+      if (fileName) {
+        // 优先直连 9880 独立 TTS 服务端口（绝对无主应用路由拦截、原生支持跨域音频流）
+        candidateUrls.push('http://127.0.0.1:9880/voices_pool/' + encodeURIComponent(fileName))
+        candidateUrls.push('/dsh-pet/voices_pool/' + encodeURIComponent(fileName))
+        candidateUrls.push('/dsh-pet/voices_pool/' + fileName)
+      }
+      if (typeof url === 'string' && !candidateUrls.includes(url)) {
+        candidateUrls.push(url)
       }
 
       for (const curUrl of candidateUrls) {
         try {
-          const resp = await fetch(curUrl, { headers: fetchHeaders, credentials: 'include' })
+          const is9880 = curUrl.includes(':9880')
+          const opt = is9880 ? { mode: 'cors' } : { headers: fetchHeaders, credentials: 'include' }
+          const resp = await fetch(curUrl, opt)
           if (resp.ok) {
             blob = await resp.blob()
             arrayBuffer = await blob.arrayBuffer()
-            break
+            if (arrayBuffer && arrayBuffer.byteLength > 0) break
           }
         } catch (e) {}
       }
@@ -5372,9 +5387,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         chip.title = `点击试听「${tag}」示例音频并驱动口型`
         chip.addEventListener('click', async () => {
           if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
-          if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}) }
+          if (audioCtx && audioCtx.state === 'suspended') { await audioCtx.resume().catch(() => {}) }
           ui.bubble.show(`正在试听「${tag}」示例声音... 可在下方列表直接点击「🌟 设为角色音」应用`, { duration: 3500 })
-          await playAudioWithLipSync('/dsh-pet/voices_pool/' + encodeURIComponent(file), { force: true })
+          await playAudioWithLipSync(file, { force: true })
         })
         quickSampleRow.appendChild(chip)
       }
@@ -5382,8 +5397,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       const poolList = $('div')
       poolList.style.display = 'flex'
       poolList.style.flexDirection = 'column'
-      poolList.style.gap = '6px'
-      poolList.style.maxHeight = '180px'
+      poolList.style.gap = '8px'
+      poolList.style.maxHeight = '280px'
       poolList.style.overflowY = 'auto'
       poolList.style.paddingRight = '2px'
 
@@ -5403,7 +5418,21 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       async function loadVoicePool() {
         poolList.innerHTML = '<div style="font-size:11px;color:#888;text-align:center;padding:12px;">正在加载示例音色池...</div>'
         try {
-          const data = await apiFetch(BASE + '/voices')
+          let data = null
+          try {
+            data = await apiFetch(BASE + '/voices')
+          } catch (e) {
+            console.warn('[桌宠语音] 主应用获取音色列表异常，尝试直连 9880 端口:', e)
+          }
+          if (!data || !Array.isArray(data.localPool) || data.localPool.length === 0) {
+            try {
+              const pResp = await fetch('http://127.0.0.1:9880/voices_list')
+              if (pResp.ok) {
+                data = await pResp.json()
+              }
+            } catch (e2) {}
+          }
+
           poolList.innerHTML = ''
           updateActiveVoiceBadge()
           const list = (data && data.localPool) || []
@@ -5419,70 +5448,107 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             return
           }
           for (const item of list) {
-            const row = $('div')
-            row.style.display = 'flex'
-            row.style.alignItems = 'center'
-            row.style.justifyContent = 'space-between'
-            row.style.padding = '6px 8px'
-            row.style.background = 'rgba(0, 0, 0, 0.25)'
-            row.style.borderRadius = '6px'
-            row.style.border = '1px solid rgba(255, 255, 255, 0.06)'
-            row.style.gap = '6px'
-
-            const infoCol = $('div')
-            infoCol.style.display = 'flex'
-            infoCol.style.flexDirection = 'column'
-            infoCol.style.overflow = 'hidden'
-            infoCol.style.flex = '1'
-
-            const nameEl = $('span', null, item.name || item.file)
-            nameEl.style.fontSize = '11.5px'
-            nameEl.style.fontWeight = 'bold'
-            nameEl.style.color = '#eee'
-            nameEl.style.whiteSpace = 'nowrap'
-            nameEl.style.overflow = 'hidden'
-            nameEl.style.textOverflow = 'ellipsis'
-
-            const sizeText = item.size ? (item.size > 1024 * 1024 ? (item.size / 1024 / 1024).toFixed(1) + 'MB' : Math.round(item.size / 1024) + 'KB') : ''
-            const metaEl = $('span', 'dshp-hint', sizeText ? `${item.file} · ${sizeText}` : item.file)
-            metaEl.style.fontSize = '10px'
-            metaEl.style.color = '#888'
-            metaEl.style.whiteSpace = 'nowrap'
-            metaEl.style.overflow = 'hidden'
-            metaEl.style.textOverflow = 'ellipsis'
-
-            infoCol.append(nameEl, metaEl)
-
-            const btnGroup = $('div')
-            btnGroup.style.display = 'flex'
-            btnGroup.style.gap = '4px'
-            btnGroup.style.flexShrink = '0'
-
-            // [▶ 试听] 按钮：播放当前示例音频，口型同步，绝不重新生成
-            const playBtn = $('button', 'dshp-btn dshp-primary', '▶ 试听')
-            playBtn.style.padding = '3px 7px'
-            playBtn.style.fontSize = '10px'
-            playBtn.title = '试听此示例音色并驱动桌宠口型'
-            playBtn.addEventListener('click', async () => {
-              if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
-              if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}) }
-              ui.bubble.show(`正在试听示例音色「${item.name || item.file}」...`, { duration: 3000 })
-              await playAudioWithLipSync(item.path, { force: true })
-            })
+            const card = $('div')
+            card.style.display = 'flex'
+            card.style.flexDirection = 'column'
+            card.style.gap = '6px'
+            card.style.padding = '8px 10px'
+            card.style.background = 'rgba(0, 0, 0, 0.28)'
+            card.style.borderRadius = '8px'
+            card.style.border = '1px solid rgba(255, 255, 255, 0.08)'
+            card.style.boxSizing = 'border-box'
+            card.style.width = '100%'
 
             // 检查当前伴侣是否正在使用该示例音
             const curVoice = (activeCharInfo() && activeCharInfo().voice) || {}
             const isUsing = (curVoice.referenceAudio && curVoice.referenceAudio.endsWith(item.file)) ||
                             (SAMPLE_VOICE_CONFIGS[item.file] && SAMPLE_VOICE_CONFIGS[item.file].voice_name === curVoice.voice_name)
 
+            // 第一行：🎵 音色名称 + 生效标识 + 大小标签
+            const headerRow = $('div')
+            headerRow.style.display = 'flex'
+            headerRow.style.alignItems = 'center'
+            headerRow.style.justifyContent = 'space-between'
+            headerRow.style.gap = '8px'
+            headerRow.style.width = '100%'
+
+            const titleWrap = $('div')
+            titleWrap.style.display = 'flex'
+            titleWrap.style.alignItems = 'center'
+            titleWrap.style.gap = '5px'
+            titleWrap.style.overflow = 'hidden'
+            titleWrap.style.flex = '1'
+
+            const titleEl = $('span', null, '🎵 ' + (item.name || item.file))
+            titleEl.style.fontSize = '12px'
+            titleEl.style.fontWeight = 'bold'
+            titleEl.style.color = '#fff'
+            titleEl.style.whiteSpace = 'nowrap'
+            titleEl.style.overflow = 'hidden'
+            titleEl.style.textOverflow = 'ellipsis'
+            titleEl.title = item.file
+            titleWrap.appendChild(titleEl)
+
+            const badgeWrap = $('div')
+            badgeWrap.style.display = 'flex'
+            badgeWrap.style.alignItems = 'center'
+            badgeWrap.style.gap = '6px'
+            badgeWrap.style.flexShrink = '0'
+
+            if (isUsing) {
+              const activeBadge = $('span', null, '✅ 当前生效')
+              activeBadge.style.fontSize = '10px'
+              activeBadge.style.padding = '1px 6px'
+              activeBadge.style.borderRadius = '4px'
+              activeBadge.style.background = 'rgba(82, 196, 26, 0.2)'
+              activeBadge.style.color = '#73d13d'
+              activeBadge.style.border = '1px solid rgba(82, 196, 26, 0.4)'
+              badgeWrap.appendChild(activeBadge)
+            }
+
+            const sizeText = item.size ? (item.size > 1024 * 1024 ? (item.size / 1024 / 1024).toFixed(1) + 'MB' : Math.round(item.size / 1024) + 'KB') : ''
+            if (sizeText) {
+              const sizeBadge = $('span', null, sizeText)
+              sizeBadge.style.fontSize = '10px'
+              sizeBadge.style.color = '#888'
+              badgeWrap.appendChild(sizeBadge)
+            }
+
+            headerRow.append(titleWrap, badgeWrap)
+
+            // 第二行：操作按钮组（平铺且自适应宽度的试听、设为角色音、设为参考、删除）
+            const btnGroup = $('div')
+            btnGroup.style.display = 'flex'
+            btnGroup.style.alignItems = 'center'
+            btnGroup.style.gap = '5px'
+            btnGroup.style.width = '100%'
+
+            // [▶ 试听] 按钮：播放当前示例音频，口型同步，绝不重新生成
+            const playBtn = $('button', 'dshp-btn dshp-primary', '▶ 试听')
+            playBtn.style.flex = '1'
+            playBtn.style.padding = '4px 6px'
+            playBtn.style.fontSize = '10.5px'
+            playBtn.style.textAlign = 'center'
+            playBtn.style.whiteSpace = 'nowrap'
+            playBtn.title = '试听此示例音色并驱动桌宠口型'
+            playBtn.addEventListener('click', async () => {
+              if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
+              if (audioCtx && audioCtx.state === 'suspended') { await audioCtx.resume().catch(() => {}) }
+              ui.bubble.show(`正在试听示例音色「${item.name || item.file}」...`, { duration: 3000 })
+              await playAudioWithLipSync(item.file || item.path, { force: true })
+            })
+
             // [🌟 设为角色音] 按钮：直接将此示例音频设为当前伴侣默认声音
-            const setCharVoiceBtn = $('button', 'dshp-btn' + (isUsing ? ' dshp-primary' : ''), isUsing ? '✅ 当前生效' : '🌟 设为角色音')
-            setCharVoiceBtn.style.padding = '3px 7px'
-            setCharVoiceBtn.style.fontSize = '10px'
+            const setCharVoiceBtn = $('button', 'dshp-btn' + (isUsing ? ' dshp-primary' : ''), isUsing ? '🌟 重新应用' : '🌟 设为角色音')
+            setCharVoiceBtn.style.flex = '1.3'
+            setCharVoiceBtn.style.padding = '4px 6px'
+            setCharVoiceBtn.style.fontSize = '10.5px'
+            setCharVoiceBtn.style.textAlign = 'center'
+            setCharVoiceBtn.style.whiteSpace = 'nowrap'
             setCharVoiceBtn.title = `将此示例音设置为「${activeCharInfo().name}」的角色声音`
             setCharVoiceBtn.addEventListener('click', async () => {
               if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
-              if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}) }
+              if (audioCtx && audioCtx.state === 'suspended') { await audioCtx.resume().catch(() => {}) }
               setCharVoiceBtn.textContent = '保存中...'
               setCharVoiceBtn.disabled = true
               try {
@@ -5517,11 +5583,11 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
                   })
                 }
 
-                promptInput.value = vPrompt
-                refAudioInput.value = refP
+                if (typeof promptInput !== 'undefined' && promptInput) promptInput.value = vPrompt
+                if (typeof refAudioInput !== 'undefined' && refAudioInput) refAudioInput.value = refP
 
                 ui.bubble.show(`已成功将「${item.name || item.file}」设为「${activeCharInfo().name}」的角色声音！`, { duration: 3500 })
-                await playAudioWithLipSync(item.path, { force: true })
+                await playAudioWithLipSync(item.file || item.path, { force: true })
                 loadVoicePool()
               } catch (e) {
                 alert('设置角色音失败: ' + (e.message || e))
@@ -5532,32 +5598,61 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
             // [📌 设为参考] 按钮：填入下方本地模型克隆参考路径
             const pickBtn = $('button', 'dshp-btn', '📌 设为参考')
-            pickBtn.style.padding = '3px 7px'
-            pickBtn.style.fontSize = '10px'
+            pickBtn.style.flex = '1'
+            pickBtn.style.padding = '4px 6px'
+            pickBtn.style.fontSize = '10.5px'
+            pickBtn.style.textAlign = 'center'
+            pickBtn.style.whiteSpace = 'nowrap'
             pickBtn.title = '填入本地克隆参考音频输入框'
             pickBtn.addEventListener('click', () => {
-              refAudioInput.value = 'voice_engine/voices_pool/' + item.file
+              if (typeof refAudioInput !== 'undefined' && refAudioInput) {
+                refAudioInput.value = 'voice_engine/voices_pool/' + item.file
+              }
               ui.bubble.show(`已将「${item.file}」设为克隆参考音频`, { duration: 2500 })
             })
 
             // [🗑️ 删除] 按钮
             const delBtn = $('button', 'dshp-btn', '🗑️ 删除')
-            delBtn.style.padding = '3px 6px'
-            delBtn.style.fontSize = '10px'
+            delBtn.style.flexShrink = '0'
+            delBtn.style.padding = '4px 6px'
+            delBtn.style.fontSize = '10.5px'
             delBtn.style.color = '#ff6b6b'
+            delBtn.style.border = '1px solid rgba(255, 107, 107, 0.25)'
+            delBtn.style.background = 'rgba(255, 107, 107, 0.08)'
+            delBtn.style.textAlign = 'center'
+            delBtn.style.whiteSpace = 'nowrap'
             delBtn.title = '从本地音色池删除此音频'
             delBtn.addEventListener('click', async () => {
-              if (!confirm(`确认要删除示例音色「${item.file}」吗？`)) return
+              if (!confirm(`确认要删除示例音色「${item.name || item.file}」吗？`)) return
               try {
-                const res = await apiFetch(BASE + '/delete-pool-voice', {
-                  method: 'POST',
-                  body: JSON.stringify({ file: item.file }),
-                })
-                if (res && res.ok) {
-                  ui.bubble.show(`已删除示例音色「${item.file}」`, { duration: 2500 })
+                let ok = false
+                let errMsg = ''
+                try {
+                  const res = await apiFetch(BASE + '/delete-pool-voice', {
+                    method: 'POST',
+                    body: JSON.stringify({ file: item.file }),
+                  })
+                  if (res && res.ok) ok = true
+                } catch (e1) {
+                  errMsg = e1.message
+                }
+                if (!ok) {
+                  try {
+                    const r = await fetch('http://127.0.0.1:9880/delete-pool-voice', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ file: item.file }),
+                    })
+                    const d = await r.json()
+                    if (d && d.ok) ok = true
+                  } catch (e2) {}
+                }
+
+                if (ok) {
+                  ui.bubble.show(`已删除示例音色「${item.name || item.file}」`, { duration: 2500 })
                   loadVoicePool()
                 } else {
-                  alert('删除失败: ' + ((res && res.error) || '未知错误'))
+                  alert('删除失败: ' + (errMsg || '未知错误'))
                 }
               } catch (e) {
                 alert('删除异常: ' + e.message)
@@ -5565,8 +5660,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             })
 
             btnGroup.append(playBtn, setCharVoiceBtn, pickBtn, delBtn)
-            row.append(infoCol, btnGroup)
-            poolList.appendChild(row)
+            card.append(headerRow, btnGroup)
+            poolList.appendChild(card)
           }
         } catch (e) {
           poolList.innerHTML = `<div style="font-size:11px;color:#ff8888;text-align:center;padding:10px;">读取音色池异常: ${e.message}</div>`

@@ -169,9 +169,25 @@ async def _synthesize_edge_tts_to_wav(
 
 class TTSServiceHandler(BaseHTTPRequestHandler):
     def _send_cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        origin = self.headers.get("Origin") or "*"
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD, DELETE")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, x-dsh-pet-desk, Authorization, Range")
+        self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type")
+        if origin != "*":
+            self.send_header("Access-Control-Allow-Credentials", "true")
+
+    def _send_error_json(self, code: int, message: str):
+        try:
+            self.send_response(code)
+            self._send_cors()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            body = json.dumps({"ok": False, "error": str(message)}, ensure_ascii=False).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            logger.warning(f"Error sending error response: {e}")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -185,14 +201,19 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(b'{"status": "ok", "service": "dsh-girl-live2d TTS Service"}')
-        elif self.path == "/voices_list":
+        elif self.path.startswith(("/voices_list", "/voices", "/dsh-pet/voices")):
             local_wavs = []
             if os.path.exists(LOCAL_VOICES_POOL_DIR):
                 try:
-                    for f in os.listdir(LOCAL_VOICES_POOL_DIR):
+                    for f in sorted(os.listdir(LOCAL_VOICES_POOL_DIR)):
                         if f.lower().endswith(('.wav', '.mp3', '.ogg', '.flac', '.m4a')):
-                            rel_path = os.path.join("voice_engine", "voices_pool", f).replace("\\", "/")
-                            local_wavs.append({"file": f, "path": rel_path})
+                            full_f = os.path.join(LOCAL_VOICES_POOL_DIR, f)
+                            local_wavs.append({
+                                "file": f,
+                                "name": os.path.splitext(f)[0],
+                                "path": f"/dsh-pet/voices_pool/{f}",
+                                "size": os.path.getsize(full_f) if os.path.isfile(full_f) else 0
+                            })
                 except Exception as e:
                     logger.warning(f"读取本地音色池失败: {e}")
             data = {
@@ -203,8 +224,10 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self._send_cors()
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(body)
         elif self.path.startswith("/voices_pool/") or self.path.startswith("/dsh-pet/voices_pool/"):
             rel_part = self.path.split("/voices_pool/", 1)[-1].split("?")[0]
             from urllib.parse import unquote
@@ -223,9 +246,9 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
                     self.wfile.write(data)
                     return
                 except Exception as e:
-                    self.send_error(500, str(e))
+                    self._send_error_json(500, str(e))
                     return
-            self.send_error(404, f"File Not Found: {decoded_file}")
+            self._send_error_json(404, f"File Not Found: {decoded_file}")
             return
         elif self.path.startswith(("/save_to_pool", "/save-to-pool", "/dsh-pet/save-to-pool")):
             from urllib.parse import urlparse, parse_qs
@@ -235,7 +258,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self._save_to_pool_bytes(name=name, audio_base64=audio_base64)
             return
         else:
-            self.send_error(404, f"Not Found: {self.path}")
+            self._send_error_json(404, f"Not Found: {self.path}")
 
     def do_POST(self):
         if self.path.startswith("/tts"):
@@ -250,8 +273,38 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             except Exception:
                 payload = {}
             self._save_to_pool_bytes(name=payload.get("name", ""), audio_base64=payload.get("audioBase64", ""))
+        elif self.path.startswith(("/delete-pool-voice", "/delete_voice", "/dsh-pet/delete-pool-voice")):
+            self._handle_delete_voice()
         else:
-            self.send_error(404, f"Not Found: {self.path}")
+            self._send_error_json(404, f"Not Found: {self.path}")
+
+    def _handle_delete_voice(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body_bytes = self.rfile.read(content_length)
+            payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            raw_file = payload.get("file", "")
+            from urllib.parse import unquote
+            safe_file = os.path.basename(unquote(raw_file))
+            if not safe_file or safe_file in (".", ".."):
+                self._send_error_json(400, "无效的文件名")
+                return
+            target_p = os.path.join(LOCAL_VOICES_POOL_DIR, safe_file)
+            if os.path.exists(target_p) and os.path.isfile(target_p):
+                os.remove(target_p)
+                logger.info(f"[TTS Service] 已成功删除音色池文件: {safe_file}")
+                self.send_response(200)
+                self._send_cors()
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                res = json.dumps({"ok": True, "deleted": safe_file}, ensure_ascii=False).encode("utf-8")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+            else:
+                self._send_error_json(404, f"文件不存在: {safe_file}")
+        except Exception as e:
+            logger.error(f"[TTS Service] 删除文件异常: {e}")
+            self._send_error_json(500, str(e))
 
     def _save_to_pool_bytes(self, name: str = "", audio_base64: str = ""):
         global _LATEST_AUDIO_BUFFER
@@ -305,7 +358,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             payload = json.loads(body_bytes.decode("utf-8"))
         except Exception as e:
             logger.error(f"[TTS Service] 请求解析失败: {e}")
-            self.send_error(400, "Bad Request")
+            self._send_error_json(400, "Bad Request")
             return
 
         raw_text = payload.get("text", "").strip()
@@ -365,7 +418,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             logger.info(f"[TTS Service] 合成完毕，返回音频流 ({len(wav_bytes)} 字节)")
         except Exception as e:
             logger.exception(f"[TTS Service] 合成异常: {e}")
-            self.send_error(500, f"Synthesis Error: {e}")
+            self._send_error_json(500, f"Synthesis Error: {e}")
 
     def _handle_generate_voice(self):
         """处理自然语言声音生成请求"""
@@ -374,7 +427,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             body_bytes = self.rfile.read(content_length)
             payload = json.loads(body_bytes.decode("utf-8"))
         except Exception as e:
-            self.send_error(400, "Bad Request")
+            self._send_error_json(400, "Bad Request")
             return
 
         prompt = payload.get("prompt", "").strip()
@@ -418,7 +471,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.wfile.write(wav_bytes)
         except Exception as e:
             logger.exception(f"[Voice Gen] 合成失败: {e}")
-            self.send_error(500, str(e))
+            self._send_error_json(500, str(e))
 
     def log_message(self, format, *args):
         logger.debug(format, *args)
