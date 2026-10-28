@@ -862,7 +862,7 @@
         body: JSON.stringify({ characterId: charId }),
       })
     } catch (e) {}
-    ui.bubble.show('正在唤醒 ' + target.name + ' ...', { busy: true, sticky: true })
+    ui.bubble.show('正在唤醒 ' + target.name + ' ...', { name: target.name, busy: true, ttl: 8000, force: true })
     try {
       contentBox = null
       await loadCharacterModel(charId)
@@ -875,9 +875,15 @@
         setBase('neutral', [])
       }
       updateMenuTabLabels()
-      ui.bubble.show('主人好！我是 ' + target.name + '（' + target.title + '），很高兴陪伴你~', { sticky: false, duration: 4000 })
+      if (ui && ui.bubble && ui.bubble.setName) ui.bubble.setName(target.name)
+      if (ui && ui.menu && (ui.menu.focused === 'click' || ui.menu.focused === 'character')) {
+        renderPane(ui.menu.focused)
+      }
+      ui.bubble.hide()
+      ui.bubble.show('主人好！我是 ' + target.name + '（' + target.title + '），很高兴陪伴你~', { name: target.name, ttl: 4000, force: true })
     } catch (err) {
-      ui.bubble.show('切换模型失败: ' + ((err && err.message) || err), { sticky: false, duration: 3000 })
+      ui.bubble.hide()
+      ui.bubble.show('切换模型失败: ' + ((err && err.message) || err), { name: target.name, ttl: 3500, force: true })
     } finally {
       switchingCharId = null
     }
@@ -2422,7 +2428,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       exclusive: spec.exclusive,
       ms,
     })
-    if (spec.line) ui.bubble.show(spec.line, { name: 'DS 鲸鱼娘', ttl: Math.max(ms, 1800) })
+    if (spec.line) ui.bubble.show(spec.line, { name: spec.name || activeCharInfo().name, ttl: Math.max(ms, 1800), force: true })
     if (spec.motion) {
       playOneShot(spec.motion)
       // 只有**真的做动作**时才暂时不盯鼠标；单纯换个表情不该把视线也停掉，
@@ -3405,7 +3411,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     // 正在思考/看资料：把话说到气泡正文里，别只更新脚注（那样看着像在摸鱼）
     if (!rig.talking && ui.bubble.visible) {
       ui.bubble.show(pickFresh(SAY[stepDef.say], 'work-' + stepDef.say), {
-        name: 'DS 鲸鱼娘',
+        name: activeCharInfo().name,
         busy: true,
         sticky: true,
       })
@@ -3434,7 +3440,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     const bubbleEl = $('div', 'dshp-bubble')
     const head = $('div', 'dshp-head')
     const dot = $('span', 'dshp-dot')
-    const headText = $('span', null, 'DS 鲸鱼娘')
+    const headText = $('span', null, (typeof activeCharInfo === 'function' && activeCharInfo() && activeCharInfo().name ? activeCharInfo().name : '伴侣'))
     head.append(dot, headText)
     const body = $('div', 'dshp-body')
     const foot = $('div', 'dshp-foot')
@@ -3560,12 +3566,17 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         // 主人要求：**工作汇报优先级最高** —— 干活/汇报期间，随机互动气泡
         // （戳一下、待机台词这些带 ttl 的）安静等着，不许把汇报顶掉。
         // 正常模式下 workHold 为 false，互动照旧。
-        const isWork = !!(opts.work || opts.sticky || opts.stream || opts.busy)
-        if (!isWork && workHold && el.classList.contains('dshp-on')) return
+        const isWork = !!(opts.work || opts.sticky || opts.stream || (opts.busy && !opts.ttl && !opts.duration))
+        if (opts.force) {
+          workHold = false
+        } else if (!isWork && workHold && el.classList.contains('dshp-on')) {
+          return
+        }
         if (isWork) workHold = true
         // 互动气泡出现 → 工作简报面板暂时隐身（互动结束后再回来）
         onBubbleEvent(isWork, true)
-        if (opts.name) headText.textContent = opts.name
+        const defaultName = (typeof activeCharInfo === 'function' && activeCharInfo() && activeCharInfo().name) ? activeCharInfo().name : '伴侣'
+        headText.textContent = opts.name || defaultName
         if (opts.stream) {
           if (!streaming) {
             buffer = ''
@@ -3589,8 +3600,14 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         dot.classList.toggle('dshp-pulse', !!opts.busy)
         el.classList.add('dshp-on')
         if (timer) clearTimeout(timer)
-        const ttl = opts.sticky ? 0 : opts.ttl != null ? opts.ttl : CFG.bubbleTtlMs
+        const ttl = opts.sticky ? 0 : (opts.ttl != null ? opts.ttl : (opts.duration != null ? opts.duration : CFG.bubbleTtlMs))
         if (ttl > 0) timer = setTimeout(() => api.hide(), ttl)
+      },
+      setName(name) {
+        if (name && headText) headText.textContent = name
+      },
+      clearWorkHold() {
+        workHold = false
       },
       note(text) {
         foot.textContent = text
@@ -4749,7 +4766,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   }
 
   function poke(clientX, clientY) {
-    if (ui.root.classList.contains('dshp-hidden')) return
+    if (ui.root.classList.contains('dshp-hidden') || switchingCharId) return
     const profile = TapProfileRegistry.get(activeCharacterId)
     profile.handlePoke(clientX, clientY, agent.status)
   }
@@ -5217,9 +5234,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           method: 'POST',
           body: '{}',
         })
-        u.bubble.show(j.ok ? '打断啦' : '打断失败：' + (j.error || '未知'), { name: 'DS 鲸鱼娘', ttl: 2000 })
+        u.bubble.show(j.ok ? '打断啦' : '打断失败：' + (j.error || '未知'), { name: activeCharInfo().name, ttl: 2000 })
       } catch (err) {
-        u.bubble.show('打断失败：' + err.message, { name: 'DS 鲸鱼娘', ttl: 2600 })
+        u.bubble.show('打断失败：' + err.message, { name: activeCharInfo().name, ttl: 2600 })
       }
     })
 
@@ -5240,7 +5257,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         closePanels()
         act({ mood: 'listening', props: IDLE_PROPS, line: text, ms: 2600 })
       } catch (err) {
-        u.bubble.show('发不出去：' + err.message, { name: 'DS 鲸鱼娘', sticky: true })
+        u.bubble.show('发不出去：' + err.message, { name: activeCharInfo().name, sticky: true })
       } finally {
         send.disabled = false
       }
@@ -7943,7 +7960,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         try {
           if (shell.on) shell.post('host:' + v)
           ui.bubble.show('好，下次连' + (v === 'auto' ? '自动挑' : v === 'desktop' ? '桌面版' : '网页版'), {
-            name: 'DS 鲸鱼娘',
+            name: activeCharInfo().name,
             ttl: 2200,
           })
         } catch (err) {}
@@ -8184,7 +8201,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         startWork()
         stopActing()
         setBase('thinking', WORK_PROPS)
-        ui.bubble.show(pick(SAY.start), { name: 'DS 鲸鱼娘', busy: true, sticky: true })
+        ui.bubble.show(pick(SAY.start), { name: activeCharInfo().name, busy: true, sticky: true })
         break
 
       case 'step-start':
@@ -8192,7 +8209,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         setStatus('thinking')
         rig.talking = false
         if (!ui.bubble.visible) {
-          ui.bubble.show(pickFresh(SAY.thinking, 'thinking'), { name: 'DS 鲸鱼娘', busy: true, sticky: true })
+          ui.bubble.show(pickFresh(SAY.thinking, 'thinking'), { name: activeCharInfo().name, busy: true, sticky: true })
         } else {
           ui.bubble.note('正在思考 · 第 ' + m.step + ' 步')
         }
@@ -8206,7 +8223,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           setStatus('speaking')
           rig.talking = true
           setBase('happy', WORK_PROPS)
-          ui.bubble.show('', { name: 'DS 鲸鱼娘', stream: true, sticky: true })
+          ui.bubble.show('', { name: activeCharInfo().name, stream: true, sticky: true })
         }
         ui.bubble.show(m.text || '', { stream: true, sticky: true })
         break
@@ -8278,7 +8295,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const line = pickFresh(pool, 'tool-' + m.name)
         const hint = toolHint(m.args)
         ui.bubble.show(line + (hint ? '\n' + hint : ''), {
-          name: 'DS 鲸鱼娘',
+          name: activeCharInfo().name,
           busy: true,
           sticky: true,
         })
@@ -8366,7 +8383,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             if (stat.length) ui.bubble.note(stat.join(' · '))
             setTimeout(() => {
               if (agent.status !== 'idle') return
-              ui.bubble.show(pickFresh(SAY.done, 'done'), { name: 'DS 鲸鱼娘', ttl: 4200 })
+              ui.bubble.show(pickFresh(SAY.done, 'done'), { name: activeCharInfo().name, ttl: 4200 })
             }, 2800)
           }
         } else if (kind === 'aborted') {
@@ -8427,7 +8444,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     }
     if (m.motion) playMotion(m.motion)
     const text = m.say || m.bubble
-    if (text) ui.bubble.show(String(text), { name: 'DS 鲸鱼娘', ttl: m.bubbleMs || 5000 })
+    if (text) ui.bubble.show(String(text), { name: activeCharInfo().name, ttl: m.bubbleMs || 5000 })
     // 工作简报（/dsh-pet/control 的 report 字段）：头顶挂信封，点开是大号面板
     if (m.report) {
       try {
@@ -8587,7 +8604,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       if (idle.sleep === 0 && quiet > CFG.sleepAfterMs) {
         idle.sleep = 2
         setBase('sleepy', IDLE_PROPS)
-        ui.bubble.show(pick(['Zzz…', '（打瞌睡）', '（趴桌上睡着了）']), { name: 'DS 鲸鱼娘', ttl: 9000 })
+        ui.bubble.show(pick(['Zzz…', '（打瞌睡）', '（趴桌上睡着了）']), { name: activeCharInfo().name, ttl: 9000 })
       } else if (idle.sleep === 0 && quiet > CFG.sleepAfterMs * 0.55 && Math.random() < 0.4) {
         // 打哈欠
         act({ mood: 'sleepy', props: IDLE_PROPS, line: '（打了个哈欠）', ms: 2600 })
