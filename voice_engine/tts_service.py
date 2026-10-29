@@ -655,7 +655,8 @@ _LAST_TRANSITION_EVAL_TIME = 0
 
 IGNORE_PROCESS_NAMES = {
     "taskmgr.exe", "shellexperiencehost.exe", "searchhost.exe",
-    "applicationframehost.exe", "lockapp.exe", "progman.exe"
+    "applicationframehost.exe", "lockapp.exe", "progman.exe",
+    "deskbox.exe", "explorer.exe", "startmenuexperiencehost.exe"
 }
 
 def _task_transition_monitor_loop():
