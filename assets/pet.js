@@ -10114,12 +10114,15 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           console.warn('[CareReply] 截图捕获降级:', ce)
         }
 
-        // 2. 对比主人话语与画面，组装多模态 Prompt 递送给 DSH
-        const prompt = `[场景关怀联动 - ${ev.category || 'desktop'}]
-前台活动应用: "${ev.title || ev.process || '桌面'}"
-伴侣刚才的主动询问: "${ev.text}"
-用户的回复内容: "${cleanReply}"
-【指令】请结合截图中前台窗口的实际画面内容与主人的回复，以角色专属拟人化口吻进行自然、贴心、有深度的陪伴回答。`
+        // 2. 对比主人话语与画面，组装去技术化、严格角色 Guardrail 的自然闲聊 Prompt
+        const activeName = (activeCharInfo() && activeCharInfo().name) || '桌宠伴侣'
+        const prompt = `【桌宠日常闲聊】你现在是陪伴在主人身边的桌面伴侣【${activeName}】。
+刚才你在桌面上看到主人在忙，主动问候了一声：“${ev.text || '主人在忙什么呀？'}”，主人回复你说：“${cleanReply}”。
+
+【硬性要求】
+1. 严禁进行任何技术分析、代码审计或工具调用，严禁长篇大论；
+2. 请直接以【${activeName}】亲切、自然、贴心的口吻，像身旁的小伙伴一样回复主人 1~2 句话（40字以内）；
+3. （附带的截屏仅作为主人的生活背景参考，请不要对着截屏里的代码长篇说教）。`
 
         const payload = {
           text: prompt,

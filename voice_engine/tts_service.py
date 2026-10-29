@@ -734,32 +734,11 @@ def _screen_vision_monitor_loop():
             now = time.time()
             cooldown = 35.0 if VISION_CONFIG.get("mode") == "companion" else 90.0
 
+            # 遵循主人架构原则：严禁本地像素差分盲目发起弹窗（刷抖音/看视频会导致差分高频误判）
+            # 伴侣本地只作为感官神经与嘴巴，不再以差分算法擅自替主人做弹窗决断
             if diff >= CANDIDATE_THRESHOLD:
-                if _LAST_CANDIDATE_TIME == 0:
-                    _LAST_CANDIDATE_TIME = now
-                elif (now - _LAST_CANDIDATE_TIME) >= STABLE_WAIT_SECONDS:
-                    if (now - _LAST_AUTO_REPLY_TIME) >= cooldown:
-                        _LAST_AUTO_REPLY_TIME = now
-                        _LAST_SCREEN_SIGNATURE = current_sig
-                        _LAST_CANDIDATE_TIME = 0
-                        with _VISION_LOCK:
-                            _LATEST_VISION_EVENT = {
-                                "id": f"vis-{int(now * 1000)}",
-                                "timestamp": int(now * 1000),
-                                "diffRatio": round(diff, 3),
-                                "text": "主人切到新的页面啦~ 需要我一起看看吗？",
-                                "shot": {
-                                    "source": "builtin",
-                                    "mime": "image/jpeg",
-                                    "width": w,
-                                    "height": h,
-                                    "base64": b64,
-                                    "capturedAt": int(now * 1000)
-                                }
-                            }
-                            logger.info(f"[ScreenVision] 产生视觉变动事件: diff={diff:.3f}")
-            else:
-                _LAST_CANDIDATE_TIME = 0
+                _LAST_SCREEN_SIGNATURE = current_sig
+            _LAST_CANDIDATE_TIME = 0
         except Exception:
             pass
 
