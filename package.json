@@ -1,6 +1,6 @@
 {
   "name": "dsh-girl-live2d",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "Live2D 多伴侣桌宠插件：支持深海鲸鱼娘、兔兔、西域舞女、可可女仆、冰冰龙等多角色即时无缝切换、自定义模型导入与删除、可视化表情/动作/场景/装饰映射、自然语言生成专属声线与双轨对话伴读、以及桌面自动化视觉协同。（改自 Andersen216/dsh-whale-girl-live2d 项目）",
   "keywords": [
     "dsh",

@@ -373,6 +373,7 @@
   let audioMasterGain = null
   let isSpeakingAudio = false
   let audioCurrentVolume = 0
+  let audioCurrentForm = 0
   let currentAudioSource = null
   let currentAudioElement = null
 
@@ -403,8 +404,8 @@
     }
     if (!audioAnalyser) {
       audioAnalyser = audioCtx.createAnalyser()
-      audioAnalyser.fftSize = 256
-      audioAnalyser.smoothingTimeConstant = 0.5
+      audioAnalyser.fftSize = 512
+      audioAnalyser.smoothingTimeConstant = 0.4
       audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount)
       audioTimeDomainArray = new Uint8Array(audioAnalyser.fftSize)
     }
@@ -419,9 +420,10 @@
     } catch (e) {}
   }
 
-  function sampleAudioMouthOpen(dt) {
+  function sampleAudioMouth(dt) {
     rig.talkPhase = (rig.talkPhase || 0) + dt
-    let rawTarget = 0
+    let targetOpen = 0
+    let targetForm = 0
     let hasAnalyserSignal = false
 
     if (isSpeakingAudio && audioAnalyser && currentAudioSource) {
@@ -437,39 +439,81 @@
         }
         const rms = Math.sqrt(sumSq / audioTimeDomainArray.length)
 
-        if (audioDataArray) {
-          audioAnalyser.getByteFrequencyData(audioDataArray)
+        if (!audioDataArray || audioDataArray.length !== audioAnalyser.frequencyBinCount) {
+          audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount)
         }
-        let freqSum = 0
-        const maxBin = audioDataArray ? Math.min(42, audioDataArray.length) : 0
-        for (let i = 2; i < maxBin; i++) {
-          freqSum += audioDataArray[i]
-        }
-        const freqAvg = maxBin > 2 ? freqSum / ((maxBin - 2) * 255) : 0
+        audioAnalyser.getByteFrequencyData(audioDataArray)
 
-        const energy = Math.max(rms * 4.2, freqAvg * 2.4)
-        if (energy > 0.015) {
+        // 提取人声三大特征频段：
+        // 1. 低频共鸣段 (F1: 90~800Hz，bins 1..8) -> 喉音/鼻音/圆唇元音 U, O
+        let lowSum = 0, lowCount = 0
+        for (let i = 1; i <= 8 && i < audioDataArray.length; i++) {
+          lowSum += audioDataArray[i]
+          lowCount++
+        }
+        const lowEnergy = lowCount > 0 ? lowSum / (lowCount * 255) : 0
+
+        // 2. 中频共鸣段 (F2: 800~2400Hz，bins 9..25) -> 元音开阔度与声门张开度 A, E
+        let midSum = 0, midCount = 0
+        for (let i = 9; i <= 25 && i < audioDataArray.length; i++) {
+          midSum += audioDataArray[i]
+          midCount++
+        }
+        const midEnergy = midCount > 0 ? midSum / (midCount * 255) : 0
+
+        // 3. 高频共鸣段 (F3/F4: 2400~5600Hz，bins 26..60) -> 齿擦音、摩擦音与扁平唇形 I, S, SH, T
+        let highSum = 0, highCount = 0
+        for (let i = 26; i <= 60 && i < audioDataArray.length; i++) {
+          highSum += audioDataArray[i]
+          highCount++
+        }
+        const highEnergy = highCount > 0 ? highSum / (highCount * 255) : 0
+
+        // 动态门限与非线性幂律响应（Gamma Response）：彻底消除 0 与 1 极端跳变
+        const speechEnergy = Math.max(rms, midEnergy * 0.45 + lowEnergy * 0.3)
+        const noiseGate = 0.012
+        if (speechEnergy > noiseGate) {
           hasAnalyserSignal = true
-          const syllableWave = 0.85 + 0.15 * Math.sin(rig.talkPhase * 15)
-          rawTarget = clamp((energy - 0.015) * 1.45 * syllableWave, 0, 1.0)
+          // 归一化输入振幅，避免直接顶格饱和
+          const norm = clamp((speechEnergy - noiseGate) / 0.18, 0, 1.0)
+          // 幂律曲线 (Gamma 1.35)：低音量微张(0.1~0.25)，中等音量开合自如(0.35~0.65)，仅洪亮开元音才冲顶(0.8~0.95)
+          const baseOpen = Math.pow(norm, 1.35) * 0.95
+          // 微量音节呼吸起伏，使长音也保持生动自然的下颌微动
+          const articulation = 0.9 + 0.1 * Math.sin(rig.talkPhase * 13)
+          targetOpen = clamp(baseOpen * articulation, 0, 0.96)
+
+          // 唇形横向形变分析 (ParamMouthForm):
+          // 高频占优为扁唇/微笑(I/E: +0.1~+0.6)，低频占优为圆唇(O/U: -0.1~-0.5)
+          const formantDiff = (highEnergy - lowEnergy * 0.85) / (highEnergy + lowEnergy + 0.02)
+          targetForm = clamp(formantDiff * 0.75, -0.55, 0.65)
         } else {
           hasAnalyserSignal = true
-          rawTarget = 0
+          targetOpen = 0
+          targetForm = 0
         }
       } catch (e) {}
     }
 
     if (!hasAnalyserSignal && (isSpeakingAudio || rig.talking)) {
-      // 降级 HTML5 Audio 播放或流式吐字阶段：采用多频自然音节包络驱动口型开合
+      // 降级 HTML5 Audio 播放或流式吐字阶段：采用具备平滑加减速的多频段音节连续流动包络
       const p = rig.talkPhase
-      const env = 0.5 + 0.35 * Math.sin(p * 11.5) + 0.25 * Math.sin(p * 19.3) + 0.15 * Math.cos(p * 7.1)
-      rawTarget = clamp(env, 0.05, 0.92)
+      const baseCadence = 0.38 + 0.28 * Math.sin(p * 9.5) + 0.16 * Math.sin(p * 15.3)
+      targetOpen = clamp(baseCadence, 0.06, 0.82)
+      targetForm = 0.2 * Math.sin(p * 6.5)
     }
 
-    const speed = rawTarget > audioCurrentVolume ? 26 : 16
-    audioCurrentVolume += (rawTarget - audioCurrentVolume) * clamp(dt * speed, 0, 1)
-    if (audioCurrentVolume < 0.01) audioCurrentVolume = 0
-    return clamp(audioCurrentVolume, 0, 1)
+    // 仿生下颌质量与阻尼物理模型：快速顺滑抬颌(Attack 18)，柔和阻尼闭颌(Decay 11)
+    const openSpeed = targetOpen > audioCurrentVolume ? 18 : 11
+    audioCurrentVolume += (targetOpen - audioCurrentVolume) * clamp(dt * openSpeed, 0, 1)
+    if (audioCurrentVolume < 0.005) audioCurrentVolume = 0
+
+    // 唇形渐变平滑
+    audioCurrentForm += (targetForm - audioCurrentForm) * clamp(dt * 12, 0, 1)
+
+    return {
+      open: clamp(audioCurrentVolume, 0, 1),
+      form: clamp(audioCurrentForm, -1, 1),
+    }
   }
 
   function stopCurrentAudio() {
@@ -495,6 +539,7 @@
     isSpeakingAudio = false
     rig.talking = false
     audioCurrentVolume = 0
+    audioCurrentForm = 0
   }
 
   async function playAudioWithLipSync(url, { force = false } = {}) {
@@ -2279,24 +2324,25 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
     }
 
-    // 说话口型：实时音频频谱包络 + 多频音节韵律驱动，空闲时嘴巴自然闭合
+    // 说话口型：基于真实语音多频共鸣特征的仿生下颌连续形变与唇形联动
     if (CFG.talkMouth && (isSpeakingAudio || rig.talking)) {
       if (frameRateGovernor) frameRateGovernor.touch()
-      const mouthOpen = sampleAudioMouthOpen(dt)
-      // 强制覆盖 ParamMouthOpenY，防止被静态表情锁死在闭嘴状态
-      delta.set('ParamMouthOpenY', mouthOpen)
+      const mouth = sampleAudioMouth(dt)
+      // 连续多级平滑写入 ParamMouthOpenY，彻底消除 0 或 1 二值跳变
+      delta.set('ParamMouthOpenY', mouth.open)
       if (!claimed.has('ParamMouthForm')) {
-        add('ParamMouthForm', 0.16 * Math.sin((rig.talkPhase || 0) * 6.5))
+        delta.set('ParamMouthForm', mouth.form)
       }
       if (activeCharacterId === 'tutu') {
-        delta.set('ParamMouthOpenY2', mouthOpen * 0.65)
-        delta.set('ParamMouthOpenY3', mouthOpen * 0.5)
+        delta.set('ParamMouthOpenY2', mouth.open * 0.55)
+        delta.set('ParamMouthOpenY3', mouth.open * 0.35)
       } else if (activeCharacterId === 'yuyu') {
-        delta.set('ParamMouthOpenY5', mouthOpen * 0.7)
-        delta.set('ParamMouthOpenY8', mouthOpen * 0.6)
+        delta.set('ParamMouthOpenY5', mouth.open * 0.6)
+        delta.set('ParamMouthOpenY8', mouth.open * 0.5)
       }
     } else {
       audioCurrentVolume = 0
+      audioCurrentForm = 0
     }
 
     // 一次性参数脉冲（爱心粒子 / 心跳），到期自动停
