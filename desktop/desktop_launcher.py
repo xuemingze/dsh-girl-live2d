@@ -140,6 +140,10 @@ class DesktopPetWindow(QWebEngineView):
         print(f"[launcher] Loading URL: {target_url}, host_pid={self.host_pid}")
         self.load(QUrl(target_url))
 
+    def mousePressEvent(self, event):
+        self.activateWindow()
+        super().mousePressEvent(event)
+
     def _setup_window(self):
         # 窗口特性：无边框 + 永远置顶 + 工具窗口 (不在 Alt-Tab 抢焦点) + 透明背景
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -257,7 +261,7 @@ class DesktopPetWindow(QWebEngineView):
         hit_js = f"""(function(){{
             try {{
                 var el = document.elementFromPoint({x}, {y});
-                var ui = !!(el && el.closest && el.closest('.dshp-panel,.dshp-menu,.dshp-hud,.dshp-bubble,.dshp-composer,.dshp-dock,.dshp-tab,.dshp-mail,.dshp-row,.dshp-btn,.dshp-toast,.dshp-subview'));
+                var ui = !!(el && el.closest && el.closest('.dshp-panel,.dshp-menu,.dshp-hud,.dshp-bubble,.dshp-composer,.dshp-dock,.dshp-tab,.dshp-mail,.dshp-row,.dshp-btn,.dshp-toast,.dshp-subview,.dshp-care-card,.dshp-chip,.dshp-input'));
                 if (ui) return 'panel';
                 if (window.DSHPet && DSHPet.hitTest && DSHPet.hitTest({x}, {y})) return 'model';
                 var dock = document.querySelector('.dshp-dock');

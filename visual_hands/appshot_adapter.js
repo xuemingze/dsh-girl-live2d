@@ -9,6 +9,7 @@
  * 4. 彻底绕过自身：无论走哪条路径，均严格贯彻防自截契约。
  */
 
+import fs from 'node:fs'
 import { BuiltinActiveWindowCapturer } from './builtin_capturer.js'
 
 export class AppshotPluginAdapter {
@@ -59,10 +60,18 @@ export class AppshotPluginAdapter {
         })
         if (res.ok) {
           const json = await res.json()
-          if (json && json.imagePath) {
+          if (json && (json.imagePath || json.base64)) {
+            let base64 = json.base64 || ''
+            if (!base64 && json.imagePath && fs.existsSync(json.imagePath)) {
+              try {
+                base64 = fs.readFileSync(json.imagePath).toString('base64')
+              } catch (re) {}
+            }
             return {
               source: 'dsh-plugin-appshot',
-              imagePath: json.imagePath,
+              imagePath: json.imagePath || '',
+              base64,
+              mime: json.mime || 'image/jpeg',
               appName: json.appName || '',
               windowTitle: json.windowTitle || '',
             }
@@ -75,5 +84,12 @@ export class AppshotPluginAdapter {
 
     // 未安装或调用异常：使用内置封装的 TargetFilter/GDI 原生捕获
     return await this.builtinCapturer.captureActiveWindow()
+  }
+
+  /**
+   * 触发一次前台活动画面捕获（门面别名）
+   */
+  async triggerCapture(sessionId = 'companion-active') {
+    return await this.captureActiveWindow({ sessionId })
   }
 }

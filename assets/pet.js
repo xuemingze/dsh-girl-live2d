@@ -220,6 +220,8 @@
     }
   }
 
+  let currentCareCardEl = null
+  let currentSessionId = null
   let lastReportedBounds = ''
   function reportBoundsToShell() {
     if (window.dshpetBridge && typeof window.dshpetBridge.syncBounds === 'function') {
@@ -244,6 +246,10 @@
       if (ui && ui.hud && ui.hud.el && ui.hud.el.classList.contains('dshp-on')) addBox(ui.hud.el)
       if (ui && ui.report && ui.report.el && ui.report.el.classList.contains('dshp-on')) addBox(ui.report.el)
       if (ui && ui.mail && ui.mail.el && ui.mail.el.style.display !== 'none') addBox(ui.mail.el)
+      if (currentCareCardEl && !currentCareCardEl.classList.contains('dshp-hidden')) addBox(currentCareCardEl)
+      for (const c of document.querySelectorAll('.dshp-care-card:not(.dshp-hidden)')) {
+        if (c !== currentCareCardEl) addBox(c)
+      }
 
       const key = JSON.stringify(list)
       if (key !== lastReportedBounds) {
@@ -1921,14 +1927,27 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 }
 /* 主动场景关怀卡片 (单次关怀协议专用) */
 .dshp-care-card{
-  position:absolute;bottom:calc(100% + 14px * var(--dshp-ps));left:50%;
-  transform:translateX(-50%);width:min(calc(300px * var(--dshp-ps)), 84vw);
-  background:var(--dshp-bg);color:var(--dshp-fg);border:1px solid var(--dshp-line);
-  border-radius:calc(var(--dshp-radius) * var(--dshp-ps));padding:10px 12px;
-  box-shadow:0 12px 32px rgba(10,14,30,.22);backdrop-filter:blur(16px);
-  z-index:18;pointer-events:auto;font-size:12px;transition:opacity .2s ease, transform .2s ease;
+  position:absolute!important;bottom:calc(100% + 14px * var(--dshp-ps))!important;left:50%!important;
+  transform:translateX(-50%)!important;width:min(calc(320px * var(--dshp-ps)), 86vw)!important;
+  background:var(--dshp-bg)!important;color:var(--dshp-fg)!important;border:1px solid var(--dshp-line)!important;
+  border-radius:calc(var(--dshp-radius) * var(--dshp-ps))!important;padding:12px 14px!important;
+  box-shadow:0 16px 42px rgba(10,14,30,.32)!important;backdrop-filter:blur(16px)!important;
+  z-index:9999!important;pointer-events:auto!important;font-size:12.5px!important;
+  user-select:text!important;-webkit-user-select:text!important;
+  opacity:1!important;visibility:visible!important;
+  transition:opacity .2s ease, transform .2s ease!important;
 }
-.dshp-care-card.dshp-hidden{opacity:0;visibility:hidden;pointer-events:none;transform:translateX(-50%) translateY(8px)}
+.dshp-care-card.dshp-hidden{
+  opacity:0!important;visibility:hidden!important;pointer-events:none!important;
+  transform:translateX(-50%) translateY(8px)!important;
+}
+.dshp-care-card button{
+  pointer-events:auto!important;cursor:pointer!important;
+}
+.dshp-care-card input{
+  pointer-events:auto!important;user-select:text!important;-webkit-user-select:text!important;
+  cursor:text!important;
+}
 .dshp-care-progress{height:3px;background:var(--dshp-accent);border-radius:2px;margin-top:8px;transition:width 0.2s linear}
 /* 内容区：给出**明确的像素高度**（不依赖百分比解析），并保持可滚动。
    ⚠️ 上一版这里写的是 max-height:none —— 它把负责限高的那条规则干掉了，
@@ -9546,6 +9565,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   }
 
   function handleEvent(m) {
+    if (m && m.sessionId) {
+      currentSessionId = m.sessionId
+    }
     switch (m.t) {
       case 'desktop_state':
         if (typeof m.running === 'boolean' && !isStandalone) {
@@ -10059,13 +10081,14 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         clearInterval(careCountdownTimer)
         careCountdownTimer = null
       }
-      if (currentCareCardEl && currentCareCardEl.parentNode) {
-        currentCareCardEl.classList.add('dshp-hidden')
+      if (currentCareCardEl) {
+        const el = currentCareCardEl
+        currentCareCardEl = null
+        el.classList.add('dshp-hidden')
+        reportBoundsToShell()
         setTimeout(() => {
-          if (currentCareCardEl && currentCareCardEl.parentNode) {
-            currentCareCardEl.parentNode.removeChild(currentCareCardEl)
-          }
-          currentCareCardEl = null
+          if (el.parentNode) el.parentNode.removeChild(el)
+          reportBoundsToShell()
         }, 220)
       }
     }
@@ -10100,6 +10123,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
         const payload = {
           text: prompt,
+          userText: cleanReply,
+          sessionId: currentSessionId || undefined,
         }
         if (capShot && capShot.base64) {
           payload.image = capShot.base64
@@ -10112,17 +10137,27 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         })
         if (!sayRes || !sayRes.ok) {
           console.warn('[CareReply] /say 处理返回异常:', sayRes)
+          ui.bubble.show('发送异常：' + ((sayRes && sayRes.error) || '请求未完成'), { name: activeCharInfo().name, ttl: 3500 })
         }
       } catch (err) {
         console.warn('[CareReply] 递送至 DSH 异常:', err)
+        ui.bubble.show('抱歉主人，发送异常：' + err.message, { name: activeCharInfo().name, ttl: 3500 })
       }
     }
 
     function showProactiveCareCard(ev) {
       dismissCareCard()
 
-      const card = $('div', 'dshp-care-card')
+      const card = $('div', 'dshp-panel dshp-care-card dshp-on')
       currentCareCardEl = card
+
+      // 阻断拖拽与点击穿透
+      const stopEv = (e) => {
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
+      }
+      card.addEventListener('pointerdown', stopEv)
+      card.addEventListener('mousedown', stopEv)
+      card.addEventListener('click', stopEv)
 
       // 顶部标题与图标
       const iconMap = {
@@ -10133,19 +10168,19 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         game: '🎯 游戏伴聊关怀',
       }
       const titleTxt = iconMap[ev.category] || '💡 伴侣温馨提示'
-      const titleRow = $('div', null, titleTxt)
+      const titleRow = $('div', 'dshp-care-title', titleTxt)
       titleRow.style.fontWeight = 'bold'
       titleRow.style.fontSize = '12.5px'
       titleRow.style.marginBottom = '6px'
       titleRow.style.color = 'var(--dshp-accent)'
 
-      const qRow = $('div', null, ev.text || '')
+      const qRow = $('div', 'dshp-care-question', ev.text || '')
       qRow.style.lineHeight = '1.45'
       qRow.style.marginBottom = '8px'
       qRow.style.fontSize = '12px'
 
       // 快捷互动选项
-      const chipRow = $('div')
+      const chipRow = $('div', 'dshp-row dshp-care-chips')
       chipRow.style.display = 'flex'
       chipRow.style.gap = '6px'
       chipRow.style.flexWrap = 'wrap'
@@ -10165,25 +10200,29 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
 
       quickOptions.forEach((optText) => {
-        const chip = $('button', 'dshp-chip', optText)
+        const chip = $('button', 'dshp-btn dshp-chip', optText)
         chip.style.fontSize = '11px'
         chip.style.padding = '3px 8px'
         chip.style.border = '1px solid var(--dshp-line)'
         chip.style.borderRadius = '6px'
         chip.style.background = 'rgba(255,255,255,0.06)'
         chip.style.cursor = 'pointer'
-        chip.addEventListener('click', () => {
+        chip.addEventListener('pointerdown', stopEv)
+        chip.addEventListener('mousedown', stopEv)
+        chip.addEventListener('click', (e) => {
+          stopEv(e)
           handleCareUserReply(ev, optText)
         })
         chipRow.appendChild(chip)
       })
 
       // 输入行
-      const inputRow = $('div')
+      const inputRow = $('div', 'dshp-row dshp-care-input-row')
       inputRow.style.display = 'flex'
       inputRow.style.gap = '6px'
 
       const inp = document.createElement('input')
+      inp.className = 'dshp-input'
       inp.type = 'text'
       inp.placeholder = '输入你的回复…'
       inp.style.flex = '1'
@@ -10195,10 +10234,20 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       inp.style.color = 'inherit'
       inp.style.outline = 'none'
 
+      inp.addEventListener('pointerdown', (e) => { stopEv(e); inp.focus() })
+      inp.addEventListener('mousedown', (e) => { stopEv(e); inp.focus() })
+      inp.addEventListener('click', (e) => { stopEv(e); inp.focus() })
+      for (const evName of ['keydown', 'keyup', 'keypress']) {
+        inp.addEventListener(evName, stopEv)
+      }
+
       const sendBtn = $('button', 'dshp-btn dshp-primary', '发送')
       sendBtn.style.fontSize = '11px'
       sendBtn.style.padding = '4px 10px'
-      sendBtn.addEventListener('click', () => {
+      sendBtn.addEventListener('pointerdown', stopEv)
+      sendBtn.addEventListener('mousedown', stopEv)
+      sendBtn.addEventListener('click', (e) => {
+        stopEv(e)
         if (inp.value.trim()) handleCareUserReply(ev, inp.value.trim())
       })
       inp.addEventListener('keydown', (e) => {
@@ -10216,6 +10265,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
       card.append(titleRow, qRow, chipRow, inputRow, progressBar)
       ui.root.appendChild(card)
+      reportBoundsToShell()
+      setTimeout(() => reportBoundsToShell(), 50)
 
       let remainingMs = 20000
       const stepMs = 200

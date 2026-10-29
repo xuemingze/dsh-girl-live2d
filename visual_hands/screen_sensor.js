@@ -79,10 +79,19 @@ export class ScreenSensorManager {
     if (appshotReady) {
       try {
         const result = await this.appshotAdapter.triggerCapture(sessionId)
-        return {
-          source: 'appshot',
-          capturedAt: Date.now(),
-          data: result,
+        if (result && (result.base64 || result.buffer)) {
+          const snapshot = {
+            source: 'appshot',
+            capturedAt: Date.now(),
+            base64: result.base64 || (result.buffer ? result.buffer.toString('base64') : ''),
+            mime: result.mime || 'image/jpeg',
+            width: result.width || 1920,
+            height: result.height || 1080,
+            data: result,
+          }
+          this._recentVisualSnapshots.unshift(snapshot)
+          if (this._recentVisualSnapshots.length > 5) this._recentVisualSnapshots.pop()
+          return snapshot
         }
       } catch (err) {
         console.warn('[screen-sensor] appshot 触发失败，无缝回退至内置原生截图器:', err.message)
