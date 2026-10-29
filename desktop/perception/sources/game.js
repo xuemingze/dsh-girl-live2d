@@ -50,15 +50,51 @@ export class GamePerceptionSource extends PerceptionSource {
     this.currentGame = null
     this.scanIntervalMs = options.scanIntervalMs ?? 5000
     this._timer = null
-    this._customGameList = new Set(options.customGameList || [])
+    this._customGames = new Map() // exe (lowercase) -> displayName
+    if (Array.isArray(options.customGameList)) {
+      this.setCustomGames(options.customGameList)
+    }
   }
 
   setCompanionMode(enabled) {
     this.companionMode = !!enabled
   }
 
-  addCustomGame(exeName) {
-    if (exeName) this._customGameList.add(exeName.toLowerCase().trim())
+  setCustomGames(list) {
+    this._customGames.clear()
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (!item) continue
+        if (typeof item === 'string') {
+          const k = item.toLowerCase().trim()
+          if (k) this._customGames.set(k, k)
+        } else if (typeof item === 'object' && item.exe) {
+          const k = String(item.exe).toLowerCase().trim()
+          const n = String(item.name || item.exe).trim()
+          if (k) this._customGames.set(k, n)
+        }
+      }
+    }
+  }
+
+  addCustomGame(exe, name) {
+    if (!exe) return
+    const k = String(exe).toLowerCase().trim()
+    const n = String(name || exe).trim()
+    this._customGames.set(k, n)
+  }
+
+  removeCustomGame(exe) {
+    if (!exe) return
+    this._customGames.delete(String(exe).toLowerCase().trim())
+  }
+
+  getCustomGames() {
+    const res = []
+    for (const [exe, name] of this._customGames.entries()) {
+      res.push({ exe, name })
+    }
+    return res
   }
 
   start() {
@@ -98,10 +134,10 @@ export class GamePerceptionSource extends PerceptionSource {
       }
 
       // 2. 匹配用户自定义游戏
-      if (!detectedGame && this._customGameList.size > 0) {
-        for (const exe of this._customGameList) {
+      if (!detectedGame && this._customGames.size > 0) {
+        for (const [exe, name] of this._customGames.entries()) {
           if (lowerOut.includes(`"${exe}"`)) {
-            detectedGame = exe
+            detectedGame = name
             break
           }
         }

@@ -7359,12 +7359,129 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       const gameSpan = $('span', null, '游戏开启时保持伴聊互动（关闭则游戏期间彻底静默）')
       gameLabel.append(gameChk, gameSpan)
 
-      const gameHint = $('div', 'dshp-hint', '💡 已内置原神、星铁、绝区零、黑神话、CS2、瓦罗兰特、LOL等及主流 Steam 游戏。只要游戏进程打开即可生效，不限全屏。')
+      // 自定义游戏进程添加与删除列表
+      const customGameSection = $('div')
+      customGameSection.style.marginTop = '8px'
+      customGameSection.style.paddingTop = '8px'
+      customGameSection.style.borderTop = '1px dashed rgba(255,255,255,0.08)'
+
+      const customGameTitle = $('div', null, '📋 自定义监听游戏列表：')
+      customGameTitle.style.fontSize = '11px'
+      customGameTitle.style.color = '#bbb'
+      customGameTitle.style.marginBottom = '6px'
+
+      const customGameChips = $('div')
+      customGameChips.style.display = 'flex'
+      customGameChips.style.flexWrap = 'wrap'
+      customGameChips.style.gap = '6px'
+      customGameChips.style.marginBottom = '8px'
+
+      function renderCustomGameChips() {
+        customGameChips.innerHTML = ''
+        const list = Array.isArray(CFG.customGames) ? CFG.customGames : []
+        if (list.length === 0) {
+          const empty = $('span', null, '暂未添加自定义游戏（默认内置支持主流 Steam / 原神 / CS2 等）')
+          empty.style.fontSize = '10.5px'
+          empty.style.color = '#666'
+          customGameChips.appendChild(empty)
+          return
+        }
+        list.forEach((g, idx) => {
+          const chip = $('div', 'dshp-chip')
+          chip.style.display = 'inline-flex'
+          chip.style.alignItems = 'center'
+          chip.style.gap = '4px'
+          chip.style.fontSize = '11px'
+          chip.style.padding = '2px 8px'
+          chip.style.background = 'rgba(124, 92, 255, 0.15)'
+          chip.style.border = '1px solid rgba(124, 92, 255, 0.3)'
+
+          const nameSpan = $('span', null, `🎮 ${g.name} (${g.exe})`)
+          const delBtn = $('span', null, '✕')
+          delBtn.style.cursor = 'pointer'
+          delBtn.style.marginLeft = '4px'
+          delBtn.style.color = '#ff6b6b'
+          delBtn.style.fontWeight = 'bold'
+          delBtn.title = '删除此自定义游戏'
+          delBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation()
+            CFG.customGames.splice(idx, 1)
+            persistCfg()
+            perceptionFetch('/perception/game-list', {
+              method: 'POST',
+              body: JSON.stringify({ customGames: CFG.customGames })
+            }).catch(() => {})
+            renderCustomGameChips()
+          })
+
+          chip.append(nameSpan, delBtn)
+          customGameChips.appendChild(chip)
+        })
+      }
+      renderCustomGameChips()
+
+      const addRow = $('div')
+      addRow.style.display = 'flex'
+      addRow.style.gap = '6px'
+      addRow.style.alignItems = 'center'
+
+      const exeInp = document.createElement('input')
+      exeInp.type = 'text'
+      exeInp.placeholder = '进程名 (如 hades2.exe)'
+      exeInp.style.flex = '1'
+      exeInp.style.fontSize = '11px'
+      exeInp.style.padding = '4px 6px'
+      exeInp.style.borderRadius = '4px'
+      exeInp.style.border = '1px solid var(--dshp-line)'
+      exeInp.style.background = 'rgba(0,0,0,0.2)'
+      exeInp.style.color = '#fff'
+
+      const nameInp = document.createElement('input')
+      nameInp.type = 'text'
+      nameInp.placeholder = '显示名 (如 哈迪斯2)'
+      nameInp.style.flex = '1'
+      nameInp.style.fontSize = '11px'
+      nameInp.style.padding = '4px 6px'
+      nameInp.style.borderRadius = '4px'
+      nameInp.style.border = '1px solid var(--dshp-line)'
+      nameInp.style.background = 'rgba(0,0,0,0.2)'
+      nameInp.style.color = '#fff'
+
+      const addBtn = $('button', 'dshp-btn dshp-primary', '➕ 添加游戏')
+      addBtn.style.fontSize = '11px'
+      addBtn.style.padding = '4px 10px'
+      addBtn.addEventListener('click', () => {
+        const exeVal = exeInp.value.trim().toLowerCase()
+        const nameVal = nameInp.value.trim() || exeVal
+        if (!exeVal) {
+          alert('请输入游戏进程文件名，例如 hades2.exe')
+          return
+        }
+        if (!CFG.customGames) CFG.customGames = []
+        if (CFG.customGames.some(item => item.exe === exeVal)) {
+          alert('该游戏进程已在列表中')
+          return
+        }
+        CFG.customGames.push({ exe: exeVal, name: nameVal })
+        persistCfg()
+        exeInp.value = ''
+        nameInp.value = ''
+        perceptionFetch('/perception/game-list', {
+          method: 'POST',
+          body: JSON.stringify({ customGames: CFG.customGames })
+        }).catch(() => {})
+        renderCustomGameChips()
+      })
+
+      addRow.append(exeInp, nameInp, addBtn)
+      customGameSection.append(customGameTitle, customGameChips, addRow)
+
+      const gameHint = $('div', 'dshp-hint', '💡 已内置原神、星铁、绝区零、黑神话、CS2、瓦罗兰特、LOL等主流游戏。只要进程打开即可触发，不限全屏。')
       gameHint.style.fontSize = '10.5px'
-      gameHint.style.marginTop = '4px'
+      gameHint.style.marginTop = '6px'
       gameHint.style.opacity = '0.75'
 
-      gameCard.append(gameTitle, gameStatusRow, gameLabel, gameHint)
+      gameCard.append(gameTitle, gameStatusRow, gameLabel, customGameSection, gameHint)
       pBox.appendChild(gameCard)
 
       // 3. 网页场景关怀 (Web Perception & Single Inquiry Protocol)
@@ -7415,10 +7532,12 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           const qText = (res && res.result && res.result.questionText) || '主人是在看去哪里的行程机票呀？'
           if (ui.bubble) ui.bubble.show(qText, { name: activeCharInfo().name, duration: 6000 })
           try {
-            if (CFG.voiceEngine !== 'none' && typeof playSpeech === 'function') {
-              playSpeech(qText)
+            if (CFG.sound !== false && typeof speakCharacterText === 'function') {
+              await speakCharacterText(qText, activeCharacterId)
             }
-          } catch (ve) {}
+          } catch (ve) {
+            console.warn('[感知问候] 伴侣语音播报异常:', ve)
+          }
         } catch (e) {
           alert('测试触发异常: ' + e.message)
         } finally {
@@ -7441,10 +7560,12 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           const qText = (res && res.result && res.result.questionText) || '主人是在看新房源或者租房信息吗？'
           if (ui.bubble) ui.bubble.show(qText, { name: activeCharInfo().name, duration: 6000 })
           try {
-            if (CFG.voiceEngine !== 'none' && typeof playSpeech === 'function') {
-              playSpeech(qText)
+            if (CFG.sound !== false && typeof speakCharacterText === 'function') {
+              await speakCharacterText(qText, activeCharacterId)
             }
-          } catch (ve) {}
+          } catch (ve) {
+            console.warn('[感知问候] 伴侣语音播报异常:', ve)
+          }
         } catch (e) {
           alert('测试触发异常: ' + e.message)
         } finally {
@@ -7462,17 +7583,71 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       webCard.append(webTitle, webLabel, webBtnRow, webHint)
       pBox.appendChild(webCard)
 
-      // 4. 前台视觉感官神经 (Screen Sensor)
+      // 4. 前台视觉感官神经 (Screen Vision Sensor) - 桌面灵视觉采集与交互机制
       const visionCard = $('div', 'dshp-card')
       visionCard.style.padding = '10px'
       visionCard.style.borderRadius = '8px'
       visionCard.style.background = 'rgba(0,0,0,0.14)'
       visionCard.style.border = '1px solid var(--dshp-line)'
 
-      const visionTitle = $('div', null, '👁️ 前台视觉感官神经 (开箱即用 + 动态多媒体抑制)')
+      const visionTitle = $('div', null, '👁️ 屏幕视觉交互感官 (基于桌面灵采集机制)')
       visionTitle.style.fontSize = '12px'
       visionTitle.style.fontWeight = 'bold'
-      visionTitle.style.marginBottom = '4px'
+      visionTitle.style.marginBottom = '6px'
+
+      const visionToggleRow = $('div')
+      visionToggleRow.style.display = 'flex'
+      visionToggleRow.style.alignItems = 'center'
+      visionToggleRow.style.justifyContent = 'space-between'
+      visionToggleRow.style.marginBottom = '8px'
+
+      const visionLabel = $('label')
+      visionLabel.style.display = 'flex'
+      visionLabel.style.alignItems = 'center'
+      visionLabel.style.gap = '6px'
+      visionLabel.style.fontSize = '12px'
+      visionLabel.style.cursor = 'pointer'
+
+      const visionChk = document.createElement('input')
+      visionChk.type = 'checkbox'
+      visionChk.checked = CFG.screenVisionEnabled !== false
+      visionChk.addEventListener('change', () => {
+        CFG.screenVisionEnabled = visionChk.checked
+        persistCfg()
+        perceptionFetch('/perception/vision-config', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: CFG.screenVisionEnabled, mode: CFG.screenVisionMode || 'companion' })
+        }).catch(() => {})
+      })
+      const visionSpan = $('span', null, '开启前台屏幕视觉智能交互')
+      visionLabel.append(visionChk, visionSpan)
+
+      const visionModeSel = document.createElement('select')
+      visionModeSel.style.fontSize = '11px'
+      visionModeSel.style.padding = '3px 6px'
+      visionModeSel.style.borderRadius = '4px'
+      visionModeSel.style.border = '1px solid var(--dshp-line)'
+      visionModeSel.style.background = 'rgba(0,0,0,0.2)'
+      visionModeSel.style.color = '#fff'
+
+      const optVComp = document.createElement('option')
+      optVComp.value = 'companion'
+      optVComp.textContent = '伴聊温情模式 (平稳切换时轻声关怀)'
+      const optVQuiet = document.createElement('option')
+      optVQuiet.value = 'quiet'
+      optVQuiet.textContent = '极简静默模式 (仅监测不打扰)'
+      visionModeSel.append(optVComp, optVQuiet)
+      visionModeSel.value = CFG.screenVisionMode || 'companion'
+      visionModeSel.addEventListener('change', () => {
+        CFG.screenVisionMode = visionModeSel.value
+        persistCfg()
+        perceptionFetch('/perception/vision-config', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: CFG.screenVisionEnabled, mode: CFG.screenVisionMode })
+        }).catch(() => {})
+      })
+
+      visionToggleRow.append(visionLabel, visionModeSel)
 
       const visionStatus = $('div')
       visionStatus.style.fontSize = '11px'
@@ -7505,7 +7680,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             previewContainer.style.flexDirection = 'column'
             previewContainer.style.gap = '4px'
 
-            const info = $('div', null, `捕获成功 (${res.shot.source === 'appshot' ? 'dsh-plugin-appshot' : '内置原生 GDI'} · ${res.shot.width || 0}×${res.shot.height || 0})`)
+            const info = $('div', null, `捕获成功 (${res.shot.source === 'appshot' ? 'dsh-plugin-appshot' : '原生 Win32 GDI'} · ${res.shot.width || 0}×${res.shot.height || 0})`)
             info.style.fontSize = '11px'
             info.style.color = '#10b981'
 
@@ -7540,12 +7715,12 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
 
       visionBtnRow.appendChild(captureBtn)
-      const visionHint = $('div', 'dshp-hint', '💡 伴侣只作为眼睛，绝不自建冗余本地视觉模型。内置 32×18 RGB 差分防抖与视频/游戏动态流抑制。')
+      const visionHint = $('div', 'dshp-hint', '💡 伴侣只作为眼睛，绝不自建冗余本地视觉模型。内置 32×18 RGB 差分防抖、动态流抑制与 WinSta0\\Default 原生极速采集。')
       visionHint.style.fontSize = '10.5px'
       visionHint.style.marginTop = '4px'
       visionHint.style.opacity = '0.75'
 
-      visionCard.append(visionTitle, visionStatus, visionBtnRow, previewContainer, visionHint)
+      visionCard.append(visionTitle, visionToggleRow, visionStatus, visionBtnRow, previewContainer, visionHint)
       pBox.appendChild(visionCard)
 
       // 异步拉取后端状态
@@ -7561,8 +7736,8 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
               gameStatusRow.textContent = '⚪ 未检测到运行中的游戏进程'
             }
 
-            const sensorModeStr = s.mode === 'appshot_integrated' ? '🔗 联动 dsh-plugin-appshot' : '🟢 内置原生靶向捕获 (开箱即用)'
-            visionStatus.textContent = `${sensorModeStr} · 动态流抑制: ${s.isDynamicStream ? '活跃' : '休眠'}`
+            const sensorModeStr = s.mode === 'appshot_integrated' ? '🔗 联动 dsh-plugin-appshot' : '🟢 原生 Win32 GDI 捕获 (开箱即用 · 防黑屏)'
+            visionStatus.textContent = `${sensorModeStr} · 视觉神经: ${s.enabled ? '活跃' : '休眠'} · 动态流抑制: ${s.isDynamicStream ? '开启' : '休眠'}`
             visionStatus.style.color = '#10b981'
           }
         })
@@ -9774,6 +9949,49 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         act({ mood: 'sleepy', props: IDLE_PROPS, line: '（打了个哈欠）', ms: 2600 })
       }
     }, 15000)
+
+    // 屏幕视觉与场景感知监测轮询：基于桌面灵视觉机制接收平稳变动事件与伴聊关怀
+    let lastHandledVisionId = null
+    setInterval(async () => {
+      if (CFG.screenVisionEnabled === false) return
+      if (agent.status !== 'idle') return
+      try {
+        const res = await perceptionFetch('/perception/status')
+        if (res && res.ok && res.screenSensor) {
+          const ev = res.screenSensor.lastEvent
+          if (ev && ev.id && ev.id !== lastHandledVisionId) {
+            lastHandledVisionId = ev.id
+            if (CFG.screenVisionMode !== 'quiet' && ev.text) {
+              if (ui.bubble) {
+                ui.bubble.show(ev.text, { name: activeCharInfo().name, duration: 6000 })
+              }
+              if (CFG.sound !== false && typeof speakCharacterText === 'function') {
+                speakCharacterText(ev.text, activeCharacterId)
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }, 6000)
+
+    // 开机初始同步自定义游戏与视觉设置至感知中枢
+    setTimeout(() => {
+      try {
+        if (Array.isArray(CFG.customGames) && CFG.customGames.length > 0) {
+          perceptionFetch('/perception/game-list', {
+            method: 'POST',
+            body: JSON.stringify({ customGames: CFG.customGames })
+          }).catch(() => {})
+        }
+        perceptionFetch('/perception/vision-config', {
+          method: 'POST',
+          body: JSON.stringify({
+            enabled: CFG.screenVisionEnabled !== false,
+            mode: CFG.screenVisionMode || 'companion'
+          })
+        }).catch(() => {})
+      } catch (e) {}
+    }, 1500)
   }
 
   // ——————————————————————————————————————————————————————————————
