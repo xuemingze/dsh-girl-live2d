@@ -9726,6 +9726,11 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         if (m.interrupted) break
         if (m.text) {
           const cleanAssistantText = stripThinking(m.text)
+          if (cleanAssistantText.includes('[SILENCE]') || cleanAssistantText.trim() === '[SILENCE]') {
+            setStatus('idle')
+            ui.bubble.hide()
+            break
+          }
           if (cleanAssistantText) {
             setStatus('speaking')
             agent.lastText = cleanAssistantText.slice(0, 4000)
@@ -10306,10 +10311,69 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }, stepMs)
     }
 
-    // 遵循主人核心架构准则（第二步架构跃迁）：
-    // 伴侣前端彻底剥离粗暴的 2.5s 状态轮询与本地差分弹窗脚本；
-    // 视觉稳态感知已由底层 OS WinEvent 钩子与 DSH [SILENCE] 门禁协议接管，
-    // 前端作为纯粹的套皮与五官，通过 EventSource ('proactive-care') 纯事件驱动响应。
+    // 稳态任务转移感知监听 (Task Transition & Proactive Care Consumer)
+    // 监听底层 9880 /perception/task-transition 产生的稳态任务待决包
+    let lastHandledTransId = null
+    setInterval(async () => {
+      if (agent.status !== 'idle') return
+      try {
+        const res = await perceptionFetch('/perception/task-transition')
+        if (!res || !res.ok || !res.transition) return
+        const trans = res.transition
+        if (!trans.id || trans.id === lastHandledTransId) return
+        lastHandledTransId = trans.id
+
+        const title = (trans.title || '').toLowerCase()
+        const pname = (trans.process || '').toLowerCase()
+
+        let category = null
+        let questionText = null
+
+        // 1. 严格过滤视频娱乐 (抖音/B站/YouTube/各类播放器) 保持绝对静默
+        const isVideo = ['bilibili', '哔哩哔哩', 'youtube', '爱奇艺', '腾讯视频', '优酷', 'potplayer', '抖音', 'tiktok'].some(k => title.includes(k) || pname.includes(k))
+        if (isVideo) {
+          console.log('[TaskTransition] 处于视频娱乐状态，触发严格静默')
+          return
+        }
+
+        // 2. 出行特价机票 (携程、飞猪、去哪儿、12306、机票等)
+        if (['机票', '航班', '携程', '去哪儿', '飞猪', '12306', '同程', 'flights', 'trip.com', 'booking', '订票', '高铁票', '酒店'].some(k => title.includes(k))) {
+          category = 'travel'
+          questionText = '主人是在看去哪里的行程机票呀？要准备出发旅行了吗？'
+        }
+        // 3. 租房找房 (自如、贝壳、链家等)
+        else if (['租房', '自如', '贝壳', '链家', '安居客', '房源'].some(k => title.includes(k))) {
+          category = 'rental'
+          questionText = '主人是在看新房源或者租房信息吗？'
+        }
+        // 4. 购物选品 (淘宝、京东等)
+        else if (['淘宝', '京东', '拼多多', '购物车', '商品详情', 'taobao', 'jd.com'].some(k => title.includes(k))) {
+          category = 'shopping'
+          questionText = '主人是在挑什么心仪的好物呀？'
+        }
+        // 5. Steam 游戏时光
+        else if (pname === 'steam.exe' || title.includes('steam')) {
+          category = 'steam'
+          questionText = 'Steam 打开啦，主人今天准备玩什么游戏呢？'
+        }
+
+        // 命中生活决策关怀情境：伴侣浮现气泡、TTS 真声播报，并展开单次交互卡片
+        if (category && questionText) {
+          console.log(`[TaskTransition] 命中主动关怀 [${category}]: ${trans.title}`)
+          if (ui.bubble) {
+            ui.bubble.show(questionText, { name: activeCharInfo().name, sticky: false, duration: 8000 })
+          }
+          if (CFG.sound !== false && typeof speakCharacterText === 'function') {
+            speakCharacterText(questionText, activeCharacterId)
+          }
+          showProactiveCareCard({
+            category,
+            text: questionText,
+            title: trans.title,
+          })
+        }
+      } catch (e) {}
+    }, 2000)
 
     // 开机初始同步自定义游戏与视觉设置至感知中枢
     setTimeout(() => {

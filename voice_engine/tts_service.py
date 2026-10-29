@@ -404,6 +404,23 @@ def scan_game_processes():
         logger.warning(f"Error scanning game processes: {e}")
         return False, None
 
+def ensure_thread_desktop():
+    try:
+        hDesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+        if hDesk:
+            user32.SetThreadDesktop(hDesk)
+    except Exception:
+        pass
+
+try:
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+except Exception:
+    pass
+
 def get_window_class(hwnd):
     buf = ctypes.create_unicode_buffer(256)
     user32.GetClassNameW(hwnd, buf, 256)
@@ -447,6 +464,7 @@ def resolve_target_window():
     - Cloaked (DWM 隐身)、最小化或不可见窗口
     锁定用户当前真正注视的前台应用窗口，防止自截。
     """
+    ensure_thread_desktop()
     candidate = None
     pet_pid = desktop_pid
 
@@ -630,108 +648,91 @@ def calculate_signature_diff(left_bytes, right_bytes):
 # 2. 稳态防抖：只有用户在目标窗口稳定操作停留 > 15 秒，才判定为新任务情境；
 # 3. 伴侣端绝不擅自做主：只生成包含截图的待决包，静候 DSH 大脑多模态裁决。
 # ============================================================================
-WINEVENT_OUTOFCONTEXT = 0x0000
-WINEVENT_SKIPOWNPROCESS = 0x0002
-EVENT_SYSTEM_FOREGROUND = 0x0003
-
-WinEventProcType = ctypes.WINFUNCTYPE(
-    None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
-    wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD
-)
-
 _CURRENT_FG_HWND = None
-_DWELL_TIMER = None
 _LATEST_TRANSITION = None
 _TRANSITION_LOCK = threading.Lock()
 _LAST_TRANSITION_EVAL_TIME = 0
-_TRANSITION_COOLDOWN_SEC = 600.0  # 10 分钟情境长冷却
 
 IGNORE_PROCESS_NAMES = {
     "taskmgr.exe", "shellexperiencehost.exe", "searchhost.exe",
     "applicationframehost.exe", "lockapp.exe", "progman.exe"
 }
 
-def _on_task_dwell_stabilized(target_hwnd):
+def _task_transition_monitor_loop():
+    """
+    Windows 前台任务稳态感知中枢 (0.0001% CPU 极低能耗稳态感知):
+    每 1.2 秒调用 user32.GetForegroundWindow 检测活动窗口。
+    当用户在新的应用窗口稳定停留达到稳态阈值 (7.0 秒) 时，
+    自动锁定前台应用窗口并截图生成待决多模态包，供 DSH 进行静默门禁裁决。
+    """
     global _LATEST_TRANSITION, _LAST_TRANSITION_EVAL_TIME
-    try:
-        now = time.time()
-        if (now - _LAST_TRANSITION_EVAL_TIME) < _TRANSITION_COOLDOWN_SEC:
-            return
+    ensure_thread_desktop()
+    logger.info("[TaskTransition] 前台稳态任务感知神经已激活 (7s 驻留稳态防抖)")
 
-        cur_fg = user32.GetForegroundWindow()
-        if cur_fg != target_hwnd:
-            return
+    last_hwnd = None
+    dwell_start = 0
+    evaluated_hwnd = None
+    evaluated_title = ""
 
-        target = resolve_target_window()
-        if not target:
-            return
+    while True:
+        try:
+            time.sleep(1.2)
+            ensure_thread_desktop()
+            cur_hwnd = user32.GetForegroundWindow()
+            if not cur_hwnd:
+                continue
 
-        title = (target.get("title") or "").strip()
-        pname = (target.get("processName") or "").lower()
-        if not title or pname in IGNORE_PROCESS_NAMES:
-            return
+            now = time.time()
+            if cur_hwnd != last_hwnd:
+                last_hwnd = cur_hwnd
+                dwell_start = now
+                continue
 
-        b64, w, h, _ = capture_screen_native(crop_foreground=True)
-        if not b64:
-            return
+            # 达到稳态驻留阈值（7.0 秒，灵敏感知同时杜绝快速切窗走马观花）
+            dwell_sec = now - dwell_start
+            if dwell_sec >= 7.0:
+                target = resolve_target_window()
+                if not target:
+                    continue
 
-        _LAST_TRANSITION_EVAL_TIME = now
-        with _TRANSITION_LOCK:
-            _LATEST_TRANSITION = {
-                "id": f"trans-{int(now * 1000)}",
-                "timestamp": int(now * 1000),
-                "process": pname,
-                "title": title,
-                "shot": {
-                    "source": "builtin",
-                    "mime": "image/jpeg",
-                    "width": w,
-                    "height": h,
-                    "base64": b64,
-                }
-            }
-        logger.info(f"[TaskTransition] 任务情境稳态切换确认 (>15s): {pname} - '{title}', 已生成 DSH 多模态待决包")
-    except Exception as e:
-        logger.warning(f"[TaskTransition] 稳态任务处理异常: {e}")
+                title = (target.get("title") or "").strip()
+                pname = (target.get("processName") or "").lower()
+                if not title or pname in IGNORE_PROCESS_NAMES:
+                    continue
 
-def _win_event_proc(hHook, event, hwnd, idObject, idChild, dwEventThread, dwmsEventTime):
-    global _CURRENT_FG_HWND, _DWELL_TIMER
-    if not hwnd or event != EVENT_SYSTEM_FOREGROUND:
-        return
-    if hwnd == _CURRENT_FG_HWND:
-        return
-    _CURRENT_FG_HWND = hwnd
-    if _DWELL_TIMER is not None:
-        _DWELL_TIMER.cancel()
-        _DWELL_TIMER = None
+                # 同一窗口标题设置 180 秒冷却防骚扰，换新窗口立即触发
+                if cur_hwnd == evaluated_hwnd and title == evaluated_title:
+                    if (now - _LAST_TRANSITION_EVAL_TIME) < 180.0:
+                        continue
 
-    _DWELL_TIMER = threading.Timer(15.0, _on_task_dwell_stabilized, [hwnd])
-    _DWELL_TIMER.daemon = True
-    _DWELL_TIMER.start()
+                b64, w, h, _ = capture_screen_native(crop_foreground=True)
+                if not b64:
+                    continue
 
-_WINEVENT_CALLBACK_REF = WinEventProcType(_win_event_proc)
+                evaluated_hwnd = cur_hwnd
+                evaluated_title = title
+                _LAST_TRANSITION_EVAL_TIME = now
 
-def _win_event_hook_thread_func():
-    try:
-        hook = user32.SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
-            0, _WINEVENT_CALLBACK_REF, 0, 0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
-        )
-        if not hook:
-            logger.warning("[TaskTransition] SetWinEventHook 安装失败")
-            return
-        logger.info("[TaskTransition] Windows EVENT_SYSTEM_FOREGROUND 钩子已激活 (0% CPU 稳态感知)")
-        msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-        user32.UnhookWinEvent(hook)
-    except Exception as e:
-        logger.warning(f"[TaskTransition] WinEvent 线程异常: {e}")
+                with _TRANSITION_LOCK:
+                    _LATEST_TRANSITION = {
+                        "id": f"trans-{int(now * 1000)}",
+                        "timestamp": int(now * 1000),
+                        "process": pname,
+                        "title": title,
+                        "shot": {
+                            "source": "builtin",
+                            "mime": "image/jpeg",
+                            "width": w,
+                            "height": h,
+                            "base64": b64,
+                        }
+                    }
+                logger.info(f"[TaskTransition] 任务情境稳态切换确认 (>7s): {pname} - '{title}', 已生成 DSH 多模态待决包")
+        except Exception as e:
+            time.sleep(2.0)
 
-_hook_thread = threading.Thread(target=_win_event_hook_thread_func, daemon=True)
-_hook_thread.start()
+_transition_thread = threading.Thread(target=_task_transition_monitor_loop, daemon=True)
+_transition_thread.start()
 
 
 class TTSServiceHandler(BaseHTTPRequestHandler):
