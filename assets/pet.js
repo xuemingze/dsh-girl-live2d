@@ -159,6 +159,11 @@
       maxWidthRatio: 0.5,
       roamEnabled: true,
       fullscreenPrimary: true,
+      voiceMode: 'rephrase', // 'rephrase' | 'template' | 'off'
+      perceptionMedia: true,
+      perceptionWeb: true,
+      perceptionGame: false,
+      screenVision: true,
     },
     BOOT.config || {},
   )
@@ -2750,6 +2755,24 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     if (spec.heart) heartBurst(ms)
     acting = { until: performance.now() + ms }
     return ms
+  }
+
+  function triggerActionByCue(cue) {
+    if (!cue || typeof cue !== 'string') return
+    const c = cue.toLowerCase()
+    if (c.includes('害羞') || c.includes('脸红') || c.includes('耳朵')) {
+      act({ mood: 'shy', face: 'shy', heart: true, ms: 2800 })
+    } else if (c.includes('得意') || c.includes('开心') || c.includes('庆祝') || c.includes('尾巴')) {
+      act({ mood: 'happy', face: 'happy', ms: 2800 })
+    } else if (c.includes('生气') || c.includes('气鼓鼓') || c.includes('跺脚')) {
+      act({ mood: 'angry', face: 'angry', ms: 2600 })
+    } else if (c.includes('困') || c.includes('哈欠') || c.includes('揉眼睛')) {
+      act({ mood: 'sleepy', face: 'sleepy', ms: 3000 })
+    } else if (c.includes('转') || c.includes('舞') || c.includes('裙摆')) {
+      act({ mood: 'excited', face: 'excited', ms: 3000 })
+    } else if (c.includes('温水') || c.includes('红茶') || c.includes('葡萄') || c.includes('茶')) {
+      act({ mood: 'reading', face: 'neutral', ms: 2600 })
+    }
   }
 
   // ——————————————————————————————————————————————————————————————
@@ -6262,6 +6285,93 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
       volLabel.append(volRange, volVal)
 
+      // 1.5 伴侣声带模式与严禁隐式降级契约
+      const modeRow = $('div', 'dshp-row')
+      modeRow.style.display = 'flex'
+      modeRow.style.flexDirection = 'column'
+      modeRow.style.gap = '4px'
+      modeRow.style.marginTop = '6px'
+
+      const modeTitle = $('div', null, '伴侣声带模式')
+      modeTitle.style.fontSize = '12px'
+      modeTitle.style.fontWeight = 'bold'
+      modeTitle.style.color = '#7c5cff'
+
+      const modeSel = document.createElement('select')
+      modeSel.style.padding = '5px 8px'
+      modeSel.style.borderRadius = '6px'
+      modeSel.style.border = '1px solid var(--dshp-line)'
+      modeSel.style.background = 'rgba(0,0,0,0.15)'
+      modeSel.style.color = 'inherit'
+      modeSel.style.fontSize = '12px'
+
+      const optRephrase = document.createElement('option')
+      optRephrase.value = 'rephrase'
+      optRephrase.textContent = '🧠 AI 人设转述器（拟人个性 + Live2D 动作联动）'
+      const optTemplate = document.createElement('option')
+      optTemplate.value = 'template'
+      optTemplate.textContent = '📋 传统规则摘要（固定模板短语）'
+      const optOff = document.createElement('option')
+      optOff.value = 'off'
+      optOff.textContent = '🔇 关闭口播（仅保留气泡文字）'
+
+      modeSel.append(optRephrase, optTemplate, optOff)
+      modeSel.value = CFG.voiceMode || 'rephrase'
+      modeSel.addEventListener('change', () => {
+        CFG.voiceMode = modeSel.value
+        persistCfg()
+      })
+
+      const modeHint = $('div', 'dshp-hint', '💡 严禁隐式降级铁律：AI 模式下若大模型调用失败将保持静默，绝不在后台偷跑模板抢权。')
+      modeHint.style.fontSize = '10.5px'
+      modeHint.style.opacity = '0.75'
+      modeHint.style.lineHeight = '1.4'
+      modeRow.append(modeTitle, modeSel, modeHint)
+
+      // 1.8 系统级感知与伴聊设置
+      const perceptionGroup = $('div')
+      perceptionGroup.style.display = 'flex'
+      perceptionGroup.style.flexDirection = 'column'
+      perceptionGroup.style.gap = '6px'
+      perceptionGroup.style.marginTop = '8px'
+      perceptionGroup.style.padding = '8px'
+      perceptionGroup.style.background = 'rgba(0,0,0,0.1)'
+      perceptionGroup.style.borderRadius = '6px'
+
+      const pTitle = $('div', null, '🧩 系统级感知与伴聊')
+      pTitle.style.fontSize = '12px'
+      pTitle.style.fontWeight = 'bold'
+      pTitle.style.color = '#7c5cff'
+
+      const createToggle = (label, cfgKey, hintText) => {
+        const row = $('label')
+        row.style.display = 'flex'
+        row.style.alignItems = 'center'
+        row.style.gap = '6px'
+        row.style.fontSize = '11.5px'
+        row.style.cursor = 'pointer'
+
+        const chk = document.createElement('input')
+        chk.type = 'checkbox'
+        chk.checked = CFG[cfgKey] !== false
+        chk.addEventListener('change', () => {
+          CFG[cfgKey] = chk.checked
+          persistCfg()
+        })
+        const span = $('span', null, label)
+        row.append(chk, span)
+        if (hintText) row.title = hintText
+        return row
+      }
+
+      perceptionGroup.append(
+        pTitle,
+        createToggle('🎵 媒体听歌感知 (SMTC)', 'perceptionMedia', '感知当前播放的曲目信息'),
+        createToggle('🌐 网页场景关怀 (出行/租房/购物)', 'perceptionWeb', '识别到出行机票或房源时发起单次关怀问询，无视则自动静默'),
+        createToggle('🎮 游戏伴聊模式 (开启伴聊 / 关闭静默)', 'perceptionGame', '全屏游戏时生效：关闭则游戏期间全程静默，开启则在游戏空档期轻度互动'),
+        createToggle('👁️ 前台视觉感官 (开箱即用 + 兼容 appshot)', 'screenVision', '内置前台窗口精准截取与防自截，无缝协同 dsh-plugin-appshot'),
+      )
+
       // 2. 🎵 示例音色库卡片（本地音色池）
       const SAMPLE_VOICE_CONFIGS = {
         '元气甜美_晓伊.wav': {
@@ -7171,7 +7281,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
       localCard.append(localTitle, engineRow, refTextHint, refAudioInput, refTextInput, saveLocalBtn)
 
-      box.append(statusTitle, basicRow, volLabel, poolCard, genCard, localCard)
+      box.append(statusTitle, basicRow, volLabel, modeRow, perceptionGroup, poolCard, genCard, localCard)
       panes.appendChild(box)
       loadVoicePool()
       return
@@ -8982,7 +9092,21 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           if (m.text) {
             ui.bubble.show(m.text, { name: activeCharInfo().name, sticky: false, duration: 4500 })
           }
+          if (m.actionCue) {
+            triggerActionByCue(m.actionCue)
+          }
           playAudioWithLipSync(audioUrl)
+        }
+        break
+
+      case 'voice-speech-stop':
+        if (activeTtsAudio) {
+          try {
+            activeTtsAudio.pause()
+            activeTtsAudio = null
+          } catch (e) {}
+          isSpeakingAudio = false
+          rig.talking = false
         }
         break
 

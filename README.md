@@ -196,7 +196,10 @@ python voice_engine/tts_service.py
 1. **原项目致谢 / Original Project**:
    - 感谢 **[Andersen216](https://github.com/Andersen216)** 开源了出色的 [dsh-whale-girl-live2d](https://github.com/Andersen216/dsh-whale-girl-live2d) 项目。
    - Special thanks to **[Andersen216](https://github.com/Andersen216)** for the original [dsh-whale-girl-live2d](https://github.com/Andersen216/dsh-whale-girl-live2d) project.
-2. **角色与美术资产授权 / Character & Artwork Attribution**:
+2. **社区灵感与关键技术致谢 / Community Inspiration & Technical Credits**:
+   - 感谢 **[TaurusWood/dsh-plugin-appshot](https://github.com/TaurusWood/dsh-plugin-appshot)**：致敬其卓越的“前台活动窗口靶向精准截取”与“反向防自捕获（Anti-Self-Capture）”设计哲学，为本项目的轻量视觉感官神经提供了极具启发性的架构参考与无缝生态联动。
+   - 感谢 **桌面灵 (zhuomianling)** 项目：致敬其高效轻量的 32×18 RGB 散列差分变动检测（ScreenChangeDetector）算法设计，为避免盲目高频截屏提供了优雅的工程参考。
+3. **角色与美术资产授权 / Character & Artwork Attribution**:
    - **鲸鱼娘 (Whale Girl)**：形象原作 [上善无形](https://space.bilibili.com/4456176)「溟月」；二次设计 [ZipZipPipe](https://space.bilibili.com/4168597)；Live2D 制作 [氵六青](https://space.bilibili.com/11272072)（CC BY-NC-SA 4.0，非商业使用 / Non-Commercial）。
    - **Live2D 模型资产 / Model Assets**：仅供非商业交流、技术学习与个人娱乐使用，禁止用于任何商业用途。All Live2D model assets are strictly for non-commercial, educational, and personal use only.
 3. **软件许可证 / Software License**:

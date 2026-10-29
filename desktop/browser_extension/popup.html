@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>DSH 伴侣网页感知</title>
+  <style>
+    body {
+      width: 280px;
+      margin: 0;
+      padding: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      color: #333;
+      background: #fafafa;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .title {
+      font-weight: 600;
+      font-size: 14px;
+      color: #111827;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: #e0f2fe;
+      color: #0284c7;
+      border-radius: 9999px;
+      font-weight: 500;
+    }
+    .field {
+      margin-bottom: 12px;
+    }
+    .label {
+      display: block;
+      font-size: 12px;
+      color: #4b5563;
+      margin-bottom: 4px;
+    }
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 12px;
+      outline: none;
+    }
+    input[type="text"]:focus {
+      border-color: #6366f1;
+    }
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 38px;
+      height: 20px;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #cbd5e1;
+      transition: .2s;
+      border-radius: 20px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 2px;
+      bottom: 2px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+    input:checked + .slider {
+      background-color: #6366f1;
+    }
+    input:checked + .slider:before {
+      transform: translateX(18px);
+    }
+    .btn-test {
+      width: 100%;
+      padding: 7px;
+      background: #4f46e5;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-test:hover {
+      background: #4338ca;
+    }
+    .status-box {
+      margin-top: 10px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      background: #f1f5f9;
+      color: #64748b;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #94a3b8;
+    }
+    .dot.online {
+      background: #10b981;
+    }
+    .dot.offline {
+      background: #ef4444;
+    }
+    .privacy {
+      margin-top: 10px;
+      font-size: 10px;
+      color: #9ca3af;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">🌸 伴侣网页感知</div>
+    <span class="badge">v1.1.01</span>
+  </div>
+
+  <div class="switch-row">
+    <span class="label" style="margin: 0; font-weight: 500;">启用场景同步</span>
+    <label class="switch">
+      <input type="checkbox" id="chk-enabled" checked>
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="field">
+    <label class="label" for="inp-url">伴侣本地服务端口</label>
+    <input type="text" id="inp-url" value="http://127.0.0.1:19387">
+  </div>
+
+  <button class="btn-test" id="btn-test">测试伴侣服务连通性</button>
+
+  <div class="status-box">
+    <span class="dot" id="status-dot"></span>
+    <span id="status-text">未检测</span>
+  </div>
+
+  <div class="privacy">
+    🔒 本地回环回路保障隐私，仅将特定场景（出行、租房、购物等）标题同步至伴侣，伴侣仅单次关怀问询，无视即彻底静默。
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

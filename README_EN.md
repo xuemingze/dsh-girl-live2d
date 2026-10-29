@@ -119,7 +119,10 @@ dsh-girl-live2d/
 
 1. **Original Project**:
    - Special thanks to **[Andersen216](https://github.com/Andersen216)** for open-sourcing [dsh-whale-girl-live2d](https://github.com/Andersen216/dsh-whale-girl-live2d).
-2. **Character & Artwork Attribution**:
+2. **Community Inspiration & Technical Credits**:
+   - Special thanks to **[TaurusWood/dsh-plugin-appshot](https://github.com/TaurusWood/dsh-plugin-appshot)** for its inspiring "targeted frontmost active window capture" and "anti-self-capture" architectural philosophy, enabling seamless context delivery.
+   - Special thanks to **Zhuomianling (桌面灵)** for its elegant 32×18 RGB hash difference detection (`ScreenChangeDetector`) design.
+3. **Character & Artwork Attribution**:
    - **Whale Girl**: Original character design by [上善无形](https://space.bilibili.com/4456176) ("Mingyue"); Maid redesign by [ZipZipPipe](https://space.bilibili.com/4168597); Live2D rigging & animation by [氵六青](https://space.bilibili.com/11272072) (CC BY-NC-SA 4.0, Non-Commercial).
    - **Live2D Model Assets**: Provided strictly for non-commercial communication, technical learning, and personal entertainment. Commercial use is prohibited.
 3. **Software License**:

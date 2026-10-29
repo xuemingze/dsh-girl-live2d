@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "DSH Live2D Pet - Web Perception Companion",
+  "version": "1.1.01",
+  "description": "为 DSH Live2D 桌面伴侣提供网页场景（出行/租房/购物等）本地事件驱动感知与智能关怀联动。",
+  "permissions": [
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:19387/*",
+    "http://localhost:19387/*",
+    "http://127.0.0.1:18488/*",
+    "http://localhost:18488/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "DSH 伴侣网页感知扩展"
+  }
+}
