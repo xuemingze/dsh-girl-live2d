@@ -404,12 +404,115 @@ def scan_game_processes():
         logger.warning(f"Error scanning game processes: {e}")
         return False, None
 
+def get_window_class(hwnd):
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+def get_window_title(hwnd):
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+def get_window_process_info(hwnd):
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    proc_name = ""
+    try:
+        proc = psutil.Process(pid.value)
+        proc_name = proc.name()
+    except Exception:
+        pass
+    return pid.value, proc_name
+
+def is_cloaked(hwnd):
+    cloaked = wintypes.DWORD(0)
+    dwmapi = getattr(ctypes.windll, 'dwmapi', None)
+    if dwmapi:
+        # DWMWA_CLOAKED = 14
+        dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+        return cloaked.value != 0
+    return False
+
+def resolve_target_window():
+    """
+    移植封装自 TaurusWood/dsh-plugin-appshot 的 TargetFilter 与 TargetWindowFinder。
+    枚举 Z 序顶层窗口，严格排除：
+    - DSH 宿主自身 (DSH Desktop, DeepSeek Harness, dsh)
+    - 桌宠自身悬浮窗口 (desktop_pid, 或标题含 dsh-girl-live2d / dsh桌宠)
+    - 系统外壳 (Progman, WorkerW, Shell_TrayWnd, Shell_SecondaryTrayWnd)
+    - Cloaked (DWM 隐身)、最小化或不可见窗口
+    锁定用户当前真正注视的前台应用窗口，防止自截。
+    """
+    candidate = None
+    pet_pid = desktop_pid
+
+    def enum_proc(hwnd, lParam):
+        nonlocal candidate
+        if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+            return True
+        cname = get_window_class(hwnd)
+        if cname in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
+            return True
+        if is_cloaked(hwnd):
+            return True
+
+        pid, pname = get_window_process_info(hwnd)
+        pname_lower = pname.lower().replace(".exe", "")
+
+        # 1. 过滤 DSH 宿主
+        if pname_lower in ("dsh desktop", "deepseek harness", "dsh"):
+            return True
+
+        # 2. 过滤伴侣自身悬浮窗 (防自截)
+        title = get_window_title(hwnd)
+        if pet_pid and pid == pet_pid:
+            return True
+        t_lower = title.lower()
+        if "dsh-girl-live2d" in t_lower or "dsh桌宠" in title or "live2d pet" in t_lower:
+            return True
+        if "electron" in pname.lower() and ("live2d" in t_lower or "dsh-pet" in t_lower):
+            return True
+
+        # 3. 获取 DWM 物理拓展边界 (DWMWA_EXTENDED_FRAME_BOUNDS = 9)
+        rect = wintypes.RECT()
+        dwmapi = getattr(ctypes.windll, 'dwmapi', None)
+        has_rect = False
+        if dwmapi:
+            hr = dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect))
+            if hr == 0:
+                has_rect = True
+        if not has_rect:
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+
+        cw = rect.right - rect.left
+        ch = rect.bottom - rect.top
+        if cw < 180 or ch < 120:
+            return True
+
+        candidate = {
+            "hwnd": hwnd,
+            "pid": pid,
+            "processName": pname,
+            "title": title,
+            "className": cname,
+            "rect": (rect.left, rect.top, cw, ch)
+        }
+        return False # 找到 Z 序最高有效窗口后终止枚举
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows(WNDENUMPROC(enum_proc), 0)
+    return candidate
+
 def capture_screen_native(crop_foreground=True):
     """
-    Windows 原生 Win32 GDI 极速前台画面捕获 (约 50-80ms，彻底根治 PowerShell/Session 隔离导致的黑屏)
+    Windows 原生 Win32 GDI 极速前台画面捕获 (防自截 + 目标应用窗口精准裁剪)
     """
     try:
-        # 1. 切换至当前交互式用户桌面 WinSta0\Default
+        # 1. 切换至当前交互式用户桌面 WinSta0\\Default
         hDesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
         if hDesk:
             user32.SetThreadDesktop(hDesk)
@@ -419,23 +522,19 @@ def capture_screen_native(crop_foreground=True):
         if screen_w <= 0 or screen_h <= 0:
             screen_w, screen_h = 1920, 1080
 
-        # 2. 探测前台活动窗口尺寸
+        # 2. 通过 TargetFilter / TargetWindowFinder 锁定目标应用窗口
         crop_rect = None
+        target_info = None
         if crop_foreground:
-            hwnd = user32.GetForegroundWindow()
-            if hwnd:
-                rect = wintypes.RECT()
-                user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                cw = rect.right - rect.left
-                ch = rect.bottom - rect.top
-                # 过滤微小窗口或底部任务栏
-                if cw >= 240 and ch >= 180 and not (cw == screen_w and ch <= 60):
-                    x = max(0, rect.left)
-                    y = max(0, rect.top)
-                    cw = min(screen_w - x, cw)
-                    ch = min(screen_h - y, ch)
-                    if cw > 0 and ch > 0:
-                        crop_rect = (x, y, cw, ch)
+            target_info = resolve_target_window()
+            if target_info and target_info.get("rect"):
+                rx, ry, rw, rh = target_info["rect"]
+                x = max(0, rx)
+                y = max(0, ry)
+                cw = min(screen_w - x, rw)
+                ch = min(screen_h - y, rh)
+                if cw >= 160 and ch >= 120:
+                    crop_rect = (x, y, cw, ch)
 
         # 3. GDI BitBlt 内存捕获
         hDC = user32.GetDC(0)
@@ -490,15 +589,15 @@ def capture_screen_native(crop_foreground=True):
 
 
 # ============================================================================
-# 桌面灵视觉采集与交互机制 (Screen Vision Monitor Engine)
+# 桌面灵视觉采集与场景交互总线 (Screen Vision & Scene Interaction Engine)
 # ============================================================================
 CHANGED_CELL_THRESHOLD = 0.12 # 桌面灵单一网格变动门槛
 CANDIDATE_THRESHOLD = 0.075   # 桌面灵候选变动门槛 (7.5% 面积变动)
 STABLE_WAIT_SECONDS = 1.2     # 稳定防抖时长
 
 VISION_CONFIG = {
-    "enabled": False,
-    "mode": "companion", # "companion" (温情伴聊) | "quiet" (极简静默)
+    "enabled": True,          # 默认开启场景感知神经，开箱即活
+    "mode": "companion",      # "companion" (温情伴聊) | "quiet" (极简静默)
 }
 _LAST_SCREEN_SIGNATURE = None
 _LAST_CANDIDATE_TIME = 0
@@ -506,6 +605,8 @@ _LAST_OBSERVED_RATIO = 0.0
 _LAST_AUTO_REPLY_TIME = 0
 _LATEST_VISION_EVENT = None
 _VISION_LOCK = threading.Lock()
+_LAST_INQUIRY_TIMES = {}      # scenario -> timestamp (单次关怀冷却)
+_IS_VIDEO_PLAYING = False     # 动态影视视频播放态 (抑制高频打扰)
 
 def calculate_signature_diff(left_bytes, right_bytes):
     if not left_bytes or not right_bytes or len(left_bytes) != 1728 or len(right_bytes) != 1728:
@@ -522,7 +623,92 @@ def calculate_signature_diff(left_bytes, right_bytes):
             changed_cells += 1
     return max(total_diff / cell_count, changed_cells / cell_count)
 
+def _foreground_scene_watcher_loop():
+    """
+    统一前台场景感知神经 (ForegroundSceneSensor)：
+    无需任何浏览器扩展或第三方插件，每 2.5 秒极速检测 Windows 前台窗口焦点，
+    智能识别 Steam、出行机票、租房、购物、视频娱乐，驱动单次主动关怀协议。
+    """
+    global _LATEST_VISION_EVENT, _IS_VIDEO_PLAYING
+    logger.info("[ForegroundSensor] 前台活动窗口与场景感知神经已激活启动")
+
+    while True:
+        try:
+            time.sleep(2.5)
+            if not VISION_CONFIG.get("enabled"):
+                continue
+
+            target = resolve_target_window()
+            if not target:
+                continue
+
+            title = target.get("title", "")
+            pname = target.get("processName", "").lower()
+            t_lower = title.lower()
+            now = time.time()
+
+            detected_category = None
+            question_text = None
+
+            # 1. 检测视频娱乐 (动态抑制高频差分)
+            is_video = any(k in t_lower for k in ["哔哩哔哩", "bilibili", "youtube", "爱奇艺", "腾讯视频", "优酷", "netflix", "potplayer"])
+            _IS_VIDEO_PLAYING = is_video
+
+            # 2. 检测 Steam (游戏平台)
+            if pname == "steam.exe" or "steam" in t_lower:
+                detected_category = "steam"
+                question_text = "Steam 打开啦，主人今天准备玩什么游戏呢？"
+
+            # 3. 检测出行与特价机票 (携程、飞猪、去哪儿、12306、订票等)
+            elif any(k in t_lower for k in [
+                "机票", "航班", "携程", "去哪儿", "飞猪", "12306", "同程", "flights", "trip.com", "booking", "订票", "高铁票", "酒店预订"
+            ]):
+                detected_category = "travel"
+                question_text = "主人是在看去哪里的行程机票呀？要准备出发旅行了吗？"
+
+            # 4. 检测租房找房 (自如、贝壳、链家、安居客、房源等)
+            elif any(k in t_lower for k in [
+                "租房", "自如", "贝壳", "链家", "安居客", "房源", "整租", "合租", "买房"
+            ]):
+                detected_category = "rental"
+                question_text = "主人是在看新房源或者租房信息吗？"
+
+            # 5. 检测购物选品 (淘宝、京东、拼多多、购物车、商品详情等)
+            elif any(k in t_lower for k in [
+                "淘宝", "京东", "拼多多", "购物车", "商品详情", "天猫", "taobao", "jd.com"
+            ]):
+                detected_category = "shopping"
+                question_text = "主人是在挑什么心仪的好物呀？"
+
+            # 6. 检测常规独立游戏
+            elif pname in KNOWN_GAMES_DICT or pname in CUSTOM_GAMES:
+                if pname != "steam.exe":
+                    gname = CUSTOM_GAMES.get(pname, KNOWN_GAMES_DICT.get(pname, "游戏"))
+                    detected_category = "game"
+                    question_text = f"主人正在玩 {gname} 呢，要加油哦~"
+
+            # 冷却与单次询问触发校验 (默认场景冷却 10 分钟 = 600 秒)
+            if detected_category and question_text:
+                last_time = _LAST_INQUIRY_TIMES.get(detected_category, 0)
+                cooldown_sec = 600.0 if VISION_CONFIG.get("mode") == "companion" else 1200.0
+                if now - last_time >= cooldown_sec:
+                    _LAST_INQUIRY_TIMES[detected_category] = now
+                    with _VISION_LOCK:
+                        _LATEST_VISION_EVENT = {
+                            "id": f"scene-{int(now * 1000)}",
+                            "timestamp": int(now * 1000),
+                            "category": detected_category,
+                            "title": title,
+                            "process": pname,
+                            "text": question_text,
+                            "isProactiveInquiry": True,
+                        }
+                    logger.info(f"[ForegroundSensor] 命中场景关怀: {detected_category} -> '{title}'")
+        except Exception as e:
+            pass
+
 def _screen_vision_monitor_loop():
+    """桌面灵 32x18 RGB 散列变动检测 (融合视频流抑制与防抖)"""
     global _LAST_SCREEN_SIGNATURE, _LAST_CANDIDATE_TIME, _LAST_OBSERVED_RATIO, _LAST_AUTO_REPLY_TIME, _LATEST_VISION_EVENT
     while True:
         try:
@@ -530,9 +716,8 @@ def _screen_vision_monitor_loop():
             if not VISION_CONFIG.get("enabled"):
                 continue
 
-            # 若正处于游戏或全屏独占，暂停视觉主动打扰
-            in_game, _ = scan_game_processes()
-            if in_game:
+            # 若正在播放视频或全屏独立游戏，抑制纯视觉差分打扰
+            if _IS_VIDEO_PLAYING:
                 continue
 
             b64, w, h, img = capture_screen_native(crop_foreground=False)
@@ -547,13 +732,12 @@ def _screen_vision_monitor_loop():
             _LAST_OBSERVED_RATIO = diff
 
             now = time.time()
-            cooldown = 25.0 if VISION_CONFIG.get("mode") == "companion" else 60.0
+            cooldown = 35.0 if VISION_CONFIG.get("mode") == "companion" else 90.0
 
             if diff >= CANDIDATE_THRESHOLD:
                 if _LAST_CANDIDATE_TIME == 0:
                     _LAST_CANDIDATE_TIME = now
                 elif (now - _LAST_CANDIDATE_TIME) >= STABLE_WAIT_SECONDS:
-                    # 稳定且超过冷却期，产生一次视觉关怀事件
                     if (now - _LAST_AUTO_REPLY_TIME) >= cooldown:
                         _LAST_AUTO_REPLY_TIME = now
                         _LAST_SCREEN_SIGNATURE = current_sig
@@ -573,15 +757,18 @@ def _screen_vision_monitor_loop():
                                     "capturedAt": int(now * 1000)
                                 }
                             }
-                            logger.info(f"[ScreenVision] 产生新的视觉交互事件: diff={diff:.3f}")
+                            logger.info(f"[ScreenVision] 产生视觉变动事件: diff={diff:.3f}")
             else:
                 _LAST_CANDIDATE_TIME = 0
         except Exception:
             pass
 
-# 启动后台视觉神经监测线程
+# 启动后台视觉神经与前台场景感知双线程
 _vision_worker_thread = threading.Thread(target=_screen_vision_monitor_loop, daemon=True)
 _vision_worker_thread.start()
+
+_scene_worker_thread = threading.Thread(target=_foreground_scene_watcher_loop, daemon=True)
+_scene_worker_thread.start()
 
 
 class TTSServiceHandler(BaseHTTPRequestHandler):
@@ -812,6 +999,14 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
 
     def _handle_perception_status(self):
         in_game, current_game = scan_game_processes()
+        target = resolve_target_window()
+        fg_window = None
+        if target:
+            fg_window = {
+                "title": target.get("title", ""),
+                "processName": target.get("processName", ""),
+                "className": target.get("className", ""),
+            }
         with _VISION_LOCK:
             last_event = _LATEST_VISION_EVENT
         data = {
@@ -821,7 +1016,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
                 "currentGame": current_game,
                 "customGames": [{"exe": k, "name": v} for k, v in CUSTOM_GAMES.items()],
                 "media": None,
-                "foregroundWindow": None,
+                "foregroundWindow": fg_window,
             },
             "screenSensor": {
                 "enabled": VISION_CONFIG.get("enabled", False),
@@ -831,6 +1026,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
                 "isDynamicStream": False,
                 "lastObservedDiff": round(_LAST_OBSERVED_RATIO, 3),
                 "lastEvent": last_event,
+                "foregroundWindow": fg_window,
             }
         }
         self._send_json(200, data)

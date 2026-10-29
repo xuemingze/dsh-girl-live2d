@@ -309,54 +309,70 @@
    */
   async function perceptionFetch(endpoint, opt = {}) {
     const relPath = endpoint.startsWith('/') ? endpoint : '/' + endpoint
-    const primaryUrl = BASE + relPath
-    let dshError = null
+    const isCapture = relPath.includes('/perception/capture')
+    let prevVis = null
 
-    // 1. 优先走主应用路由
-    try {
-      const headers = Object.assign({}, opt.headers || {})
-      if (opt.body && !headers['Content-Type'] && typeof opt.body === 'string') {
-        headers['Content-Type'] = 'application/json'
-      }
-      if (DESK_TOKEN) headers['x-dsh-pet-desk'] = DESK_TOKEN
-      const res = await fetch(primaryUrl, Object.assign({}, opt, {
-        headers,
-        credentials: 'include',
-      }))
-      if (res.status !== 404 && res.status !== 405) {
-        const raw = await res.text()
-        let data = null
-        try { data = JSON.parse(raw) } catch (e) {}
-        if (!res.ok) {
-          throw new Error((data && data.error) || ('HTTP ' + res.status + (raw && raw.length < 80 ? ': ' + raw : '')))
-        }
-        return data || { ok: true }
-      }
-      dshError = new Error('HTTP ' + res.status)
-    } catch (err) {
-      dshError = err
+    if (isCapture && ui && ui.root) {
+      // 物理级防自截：捕获瞬间桌宠根容器暂时隐形 45ms，确保画面中绝无桌宠倒影
+      prevVis = ui.root.style.visibility
+      ui.root.style.visibility = 'hidden'
+      await new Promise(r => setTimeout(r, 45))
     }
 
-    // 2. 遇 405/404/网络异常，无缝降级直连 9880 伴随服务独立端口
-    const fallbackUrl = 'http://127.0.0.1:9880' + relPath
     try {
-      const fbHeaders = Object.assign({}, opt.headers || {})
-      if (opt.body && !fbHeaders['Content-Type'] && typeof opt.body === 'string') {
-        fbHeaders['Content-Type'] = 'application/json'
+      const primaryUrl = BASE + relPath
+      let dshError = null
+
+      // 1. 优先走主应用路由
+      try {
+        const headers = Object.assign({}, opt.headers || {})
+        if (opt.body && !headers['Content-Type'] && typeof opt.body === 'string') {
+          headers['Content-Type'] = 'application/json'
+        }
+        if (DESK_TOKEN) headers['x-dsh-pet-desk'] = DESK_TOKEN
+        const res = await fetch(primaryUrl, Object.assign({}, opt, {
+          headers,
+          credentials: 'include',
+        }))
+        if (res.status !== 404 && res.status !== 405) {
+          const raw = await res.text()
+          let data = null
+          try { data = JSON.parse(raw) } catch (e) {}
+          if (!res.ok) {
+            throw new Error((data && data.error) || ('HTTP ' + res.status + (raw && raw.length < 80 ? ': ' + raw : '')))
+          }
+          return data || { ok: true }
+        }
+        dshError = new Error('HTTP ' + res.status)
+      } catch (err) {
+        dshError = err
       }
-      const fbRes = await fetch(fallbackUrl, Object.assign({}, opt, {
-        headers: fbHeaders,
-        mode: 'cors',
-      }))
-      const fbRaw = await fbRes.text()
-      let fbData = null
-      try { fbData = JSON.parse(fbRaw) } catch (e) {}
-      if (!fbRes.ok) {
-        throw new Error((fbData && fbData.error) || ('HTTP ' + fbRes.status + (fbRaw && fbRaw.length < 80 ? ': ' + fbRaw : '')))
+
+      // 2. 遇 405/404/网络异常，无缝降级直连 9880 伴随服务独立端口
+      const fallbackUrl = 'http://127.0.0.1:9880' + relPath
+      try {
+        const fbHeaders = Object.assign({}, opt.headers || {})
+        if (opt.body && !fbHeaders['Content-Type'] && typeof opt.body === 'string') {
+          fbHeaders['Content-Type'] = 'application/json'
+        }
+        const fbRes = await fetch(fallbackUrl, Object.assign({}, opt, {
+          headers: fbHeaders,
+          mode: 'cors',
+        }))
+        const fbRaw = await fbRes.text()
+        let fbData = null
+        try { fbData = JSON.parse(fbRaw) } catch (e) {}
+        if (!fbRes.ok) {
+          throw new Error((fbData && fbData.error) || ('HTTP ' + fbRes.status + (fbRaw && fbRaw.length < 80 ? ': ' + fbRaw : '')))
+        }
+        return fbData || { ok: true }
+      } catch (fbErr) {
+        throw new Error(`感知请求失败 (主服务: ${dshError ? dshError.message : '无响应'}, 9880备用: ${fbErr.message})`)
       }
-      return fbData || { ok: true }
-    } catch (fbErr) {
-      throw new Error(`感知请求失败 (主服务: ${dshError ? dshError.message : '无响应'}, 9880备用: ${fbErr.message})`)
+    } finally {
+      if (isCapture && ui && ui.root) {
+        ui.root.style.visibility = prevVis || ''
+      }
     }
   }
 
@@ -1888,15 +1904,38 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 .dshp-label{font-size:12.5px}
 .dshp-btn{font-size:12.5px;padding:7px 12px;border-radius:9px}
 
-/* 面板本体裁掉一切溢出（物理上不可能再出现「文字跑到框外面」） */
-.dshp-menu{width:360px!important;height:min(300px, calc(100vh - 200px))!important;
-  overflow:hidden!important;box-sizing:border-box!important}
+/* 菜单侧边智能停靠：停靠在角色左右两侧，彻底避开上方对话气泡/互动卡片与下方输入框 */
+.dshp-menu{
+  position:absolute!important;bottom:auto!important;top:50%!important;
+  width:360px!important;height:min(320px, calc(100vh - 120px))!important;
+  overflow:hidden!important;box-sizing:border-box!important;
+  z-index:20;
+}
+.dshp-menu.dshp-dock-right{
+  left:calc(100% + 14px * var(--dshp-ps))!important;right:auto!important;
+  transform:translateY(calc(-50% + var(--dshp-shift-y, 0px))) translateX(var(--dshp-shift, 0px))!important;
+}
+.dshp-menu.dshp-dock-left{
+  right:calc(100% + 14px * var(--dshp-ps))!important;left:auto!important;
+  transform:translateY(calc(-50% + var(--dshp-shift-y, 0px))) translateX(var(--dshp-shift, 0px))!important;
+}
+/* 主动场景关怀卡片 (单次关怀协议专用) */
+.dshp-care-card{
+  position:absolute;bottom:calc(100% + 14px * var(--dshp-ps));left:50%;
+  transform:translateX(-50%);width:min(calc(300px * var(--dshp-ps)), 84vw);
+  background:var(--dshp-bg);color:var(--dshp-fg);border:1px solid var(--dshp-line);
+  border-radius:calc(var(--dshp-radius) * var(--dshp-ps));padding:10px 12px;
+  box-shadow:0 12px 32px rgba(10,14,30,.22);backdrop-filter:blur(16px);
+  z-index:18;pointer-events:auto;font-size:12px;transition:opacity .2s ease, transform .2s ease;
+}
+.dshp-care-card.dshp-hidden{opacity:0;visibility:hidden;pointer-events:none;transform:translateX(-50%) translateY(8px)}
+.dshp-care-progress{height:3px;background:var(--dshp-accent);border-radius:2px;margin-top:8px;transition:width 0.2s linear}
 /* 内容区：给出**明确的像素高度**（不依赖百分比解析），并保持可滚动。
    ⚠️ 上一版这里写的是 max-height:none —— 它把负责限高的那条规则干掉了，
    于是内容直接溢出到框外（主人截图里文字跑出面板就是这个原因）。 */
 .dshp-menu .dshp-panes{
-  height:calc(min(300px, 100vh - 200px) - 42px)!important;
-  max-height:calc(min(300px, 100vh - 200px) - 42px)!important;
+  height:calc(min(320px, 100vh - 120px) - 42px)!important;
+  max-height:calc(min(320px, 100vh - 120px) - 42px)!important;
   overflow-y:auto!important;overflow-x:hidden!important;
   overscroll-behavior:contain;padding-right:12px;
   scrollbar-gutter:stable}
@@ -3122,11 +3161,49 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     panel.style.setProperty('--dshp-shift', '0px')
     panel.style.setProperty('--dshp-shift-y', '0px')
     if (!panel.classList.contains('dshp-on')) return
+
+    const r = ui.root.getBoundingClientRect()
+    const isMenu = panel.classList.contains('dshp-menu')
+    const isComposer = panel.classList.contains('dshp-composer')
+
+    if (isMenu) {
+      // 菜单侧边智能动态停靠：靠近左边框在右边，靠近右边框在左边，绝不遮挡头顶互动卡片与对话框
+      const charCenterX = r.left + r.width / 2
+      const menuWidth = 360
+      let shiftX = 0
+      let shiftY = 0
+
+      if (charCenterX < vw / 2) {
+        panel.classList.add('dshp-dock-right')
+        panel.classList.remove('dshp-dock-left')
+        const expectedRight = r.right + 14 + menuWidth
+        if (expectedRight > vw - pad) {
+          shiftX = (vw - pad) - expectedRight
+        }
+      } else {
+        panel.classList.add('dshp-dock-left')
+        panel.classList.remove('dshp-dock-right')
+        const expectedLeft = r.left - 14 - menuWidth
+        if (expectedLeft < pad) {
+          shiftX = pad - expectedLeft
+        }
+      }
+      panel.style.setProperty('--dshp-shift', Math.round(shiftX) + 'px')
+
+      // 纵向避障 (居中腰部微调)
+      const rect = panel.getBoundingClientRect()
+      if (rect.top < pad) {
+        shiftY = pad - rect.top
+      } else if (rect.bottom > vh - pad) {
+        shiftY = (vh - pad) - rect.bottom
+      }
+      panel.style.setProperty('--dshp-shift-y', Math.round(shiftY) + 'px')
+      return
+    }
+
     const rect = panel.getBoundingClientRect()
     const w = rect.width || 0
     if (!w) return
-    const r = ui.root.getBoundingClientRect()
-    const isComposer = panel.classList.contains('dshp-composer')
     const anchor = isComposer ? (r.left + r.width / 2) : headScreenX() // 脚部输入框居中对准脚底，头部面板对准头顶
     // 面板基准是「以桌宠中心居中」（left:50% + translateX(-50%)），所以位移 = 锚点 - 根节点中心
     let shift = anchor - (r.left + r.width / 2)
@@ -7695,10 +7772,32 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             const askDshBtn = $('button', 'dshp-chip', '💬 发送给 DSH 讨论当前画面')
             askDshBtn.style.fontSize = '11px'
             askDshBtn.style.padding = '4px 8px'
-            askDshBtn.addEventListener('click', () => {
-              if (ui && ui.composer && ui.composer.inp) {
-                ui.composer.inp.value = '帮我看一下当前前台窗口的内容，并给出分析建议。'
-                openMenu('talk')
+            askDshBtn.addEventListener('click', async () => {
+              askDshBtn.disabled = true
+              askDshBtn.textContent = '⏳ 正在处理...'
+              try {
+                const text = '请帮我看一下当前前台窗口的内容，并给出你的分析或建议。'
+                const resSay = await apiFetch(BASE + '/say', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    text,
+                    image: res.shot.base64,
+                    imageMime: res.shot.mime || 'image/jpeg',
+                  }),
+                })
+                if (!resSay || !resSay.ok) throw new Error((resSay && resSay.error) || '发送失败')
+                closePanels()
+                ui.bubble.show('我看到了哦，让我想一想~', { name: activeCharInfo().name, ttl: 4000 })
+                act({ mood: 'listening', props: IDLE_PROPS, line: '我看到了哦，让我想一想~', ms: 3000 })
+              } catch (err) {
+                if (ui && ui.composer && ui.composer.ta) {
+                  ui.composer.ta.value = '请帮我看一下当前前台窗口的内容，并给出你的分析或建议。'
+                  openMenu('talk')
+                }
+                ui.bubble.show('我看到啦，先记在底下的对话框里咯~', { name: activeCharInfo().name, ttl: 3000 })
+              } finally {
+                askDshBtn.disabled = false
+                askDshBtn.textContent = '💬 发送给 DSH 讨论当前画面'
               }
             })
 
@@ -9950,10 +10049,188 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
     }, 15000)
 
-    // 屏幕视觉与场景感知监测轮询：基于桌面灵视觉机制接收平稳变动事件与伴聊关怀
+    // 屏幕视觉与场景感知监测轮询：基于统一前台场景神经与桌面灵机制接收关怀事件
     let lastHandledVisionId = null
+    let currentCareCardEl = null
+    let careCountdownTimer = null
+
+    function dismissCareCard() {
+      if (careCountdownTimer) {
+        clearInterval(careCountdownTimer)
+        careCountdownTimer = null
+      }
+      if (currentCareCardEl && currentCareCardEl.parentNode) {
+        currentCareCardEl.classList.add('dshp-hidden')
+        setTimeout(() => {
+          if (currentCareCardEl && currentCareCardEl.parentNode) {
+            currentCareCardEl.parentNode.removeChild(currentCareCardEl)
+          }
+          currentCareCardEl = null
+        }, 220)
+      }
+    }
+
+    async function handleCareUserReply(ev, replyText) {
+      dismissCareCard()
+      const cleanReply = String(replyText || '').trim()
+      if (!cleanReply) return
+
+      // 用户回复时的专属情境台词 (遵循主人硬约束：不再使用机械语句，改为“我看到了哦，让我想一想~”)
+      ui.bubble.show('我看到了哦，让我想一想~', { name: activeCharInfo().name, ttl: 4000 })
+      act({ mood: 'listening', props: IDLE_PROPS, line: '我看到了哦，让我想一想~', ms: 3200 })
+
+      try {
+        // 1. 每接到用户的一份回复，立即截图一次 (防自截)
+        let capShot = null
+        try {
+          const capRes = await perceptionFetch('/perception/capture', { method: 'POST', body: '{}' })
+          if (capRes && capRes.shot && capRes.shot.base64) {
+            capShot = capRes.shot
+          }
+        } catch (ce) {
+          console.warn('[CareReply] 截图捕获降级:', ce)
+        }
+
+        // 2. 对比主人话语与画面，组装多模态 Prompt 递送给 DSH
+        const prompt = `[场景关怀联动 - ${ev.category || 'desktop'}]
+前台活动应用: "${ev.title || ev.process || '桌面'}"
+伴侣刚才的主动询问: "${ev.text}"
+用户的回复内容: "${cleanReply}"
+【指令】请结合截图中前台窗口的实际画面内容与主人的回复，以角色专属拟人化口吻进行自然、贴心、有深度的陪伴回答。`
+
+        const payload = {
+          text: prompt,
+        }
+        if (capShot && capShot.base64) {
+          payload.image = capShot.base64
+          payload.imageMime = capShot.mime || 'image/jpeg'
+        }
+
+        const sayRes = await apiFetch(BASE + '/say', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        })
+        if (!sayRes || !sayRes.ok) {
+          console.warn('[CareReply] /say 处理返回异常:', sayRes)
+        }
+      } catch (err) {
+        console.warn('[CareReply] 递送至 DSH 异常:', err)
+      }
+    }
+
+    function showProactiveCareCard(ev) {
+      dismissCareCard()
+
+      const card = $('div', 'dshp-care-card')
+      currentCareCardEl = card
+
+      // 顶部标题与图标
+      const iconMap = {
+        travel: '✈️ 出行行程关怀',
+        rental: '🏠 租房房源助手',
+        shopping: '🛍️ 好物随行伴聊',
+        steam: '🎮 Steam 游戏时光',
+        game: '🎯 游戏伴聊关怀',
+      }
+      const titleTxt = iconMap[ev.category] || '💡 伴侣温馨提示'
+      const titleRow = $('div', null, titleTxt)
+      titleRow.style.fontWeight = 'bold'
+      titleRow.style.fontSize = '12.5px'
+      titleRow.style.marginBottom = '6px'
+      titleRow.style.color = 'var(--dshp-accent)'
+
+      const qRow = $('div', null, ev.text || '')
+      qRow.style.lineHeight = '1.45'
+      qRow.style.marginBottom = '8px'
+      qRow.style.fontSize = '12px'
+
+      // 快捷互动选项
+      const chipRow = $('div')
+      chipRow.style.display = 'flex'
+      chipRow.style.gap = '6px'
+      chipRow.style.flexWrap = 'wrap'
+      chipRow.style.marginBottom = '8px'
+
+      const quickOptions = []
+      if (ev.category === 'travel') {
+        quickOptions.push('✈️ 去旅行度假', '💼 出差订票', '帮我挑挑选选')
+      } else if (ev.category === 'steam' || ev.category === 'game') {
+        quickOptions.push('🎮 痛快玩一把', '逛逛特惠', '今天先休息')
+      } else if (ev.category === 'rental') {
+        quickOptions.push('看新房源', '查看周边配套', '随便瞧瞧')
+      } else if (ev.category === 'shopping') {
+        quickOptions.push('挑个好物', '先加购物车', '看看比价')
+      } else {
+        quickOptions.push('好呀', '一起看看', '稍后聊')
+      }
+
+      quickOptions.forEach((optText) => {
+        const chip = $('button', 'dshp-chip', optText)
+        chip.style.fontSize = '11px'
+        chip.style.padding = '3px 8px'
+        chip.style.border = '1px solid var(--dshp-line)'
+        chip.style.borderRadius = '6px'
+        chip.style.background = 'rgba(255,255,255,0.06)'
+        chip.style.cursor = 'pointer'
+        chip.addEventListener('click', () => {
+          handleCareUserReply(ev, optText)
+        })
+        chipRow.appendChild(chip)
+      })
+
+      // 输入行
+      const inputRow = $('div')
+      inputRow.style.display = 'flex'
+      inputRow.style.gap = '6px'
+
+      const inp = document.createElement('input')
+      inp.type = 'text'
+      inp.placeholder = '输入你的回复…'
+      inp.style.flex = '1'
+      inp.style.fontSize = '11px'
+      inp.style.padding = '4px 8px'
+      inp.style.borderRadius = '6px'
+      inp.style.border = '1px solid var(--dshp-line)'
+      inp.style.background = 'transparent'
+      inp.style.color = 'inherit'
+      inp.style.outline = 'none'
+
+      const sendBtn = $('button', 'dshp-btn dshp-primary', '发送')
+      sendBtn.style.fontSize = '11px'
+      sendBtn.style.padding = '4px 10px'
+      sendBtn.addEventListener('click', () => {
+        if (inp.value.trim()) handleCareUserReply(ev, inp.value.trim())
+      })
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && inp.value.trim()) {
+          e.preventDefault()
+          handleCareUserReply(ev, inp.value.trim())
+        }
+      })
+
+      inputRow.append(inp, sendBtn)
+
+      // 20 秒无视倒计时进度条 (单次询问协议：无视即彻底静默)
+      const progressBar = $('div', 'dshp-care-progress')
+      progressBar.style.width = '100%'
+
+      card.append(titleRow, qRow, chipRow, inputRow, progressBar)
+      ui.root.appendChild(card)
+
+      let remainingMs = 20000
+      const stepMs = 200
+      careCountdownTimer = setInterval(() => {
+        remainingMs -= stepMs
+        if (remainingMs <= 0) {
+          dismissCareCard()
+        } else {
+          progressBar.style.width = `${Math.max(0, (remainingMs / 20000) * 100)}%`
+        }
+      }, stepMs)
+    }
+
     setInterval(async () => {
-      if (CFG.screenVisionEnabled === false) return
+      if (CFG.screenVision === false && CFG.screenVisionEnabled === false) return
       if (agent.status !== 'idle') return
       try {
         const res = await perceptionFetch('/perception/status')
@@ -9963,16 +10240,18 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             lastHandledVisionId = ev.id
             if (CFG.screenVisionMode !== 'quiet' && ev.text) {
               if (ui.bubble) {
-                ui.bubble.show(ev.text, { name: activeCharInfo().name, duration: 6000 })
+                ui.bubble.show(ev.text, { name: activeCharInfo().name, duration: 8000 })
               }
               if (CFG.sound !== false && typeof speakCharacterText === 'function') {
                 speakCharacterText(ev.text, activeCharacterId)
               }
+              // 触发单次关怀卡片，启动用户回复即截图互动链路
+              showProactiveCareCard(ev)
             }
           }
         }
       } catch (e) {}
-    }, 6000)
+    }, 2500)
 
     // 开机初始同步自定义游戏与视觉设置至感知中枢
     setTimeout(() => {
