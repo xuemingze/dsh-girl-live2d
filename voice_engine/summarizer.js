@@ -10,11 +10,12 @@ export function extractCompanionVoiceText(rawText, characterId = 'whale') {
 
   // 1. 彻底剔除思考链和不可读语法块（支持未闭合流式思考）
   let text = rawText
-    .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
-    .replace(/<thought>[\s\S]*?(?:<\/thought>|$)/gi, '')
-    .replace(/<analysis>[\s\S]*?(?:<\/analysis>|$)/gi, '')
-    .replace(/<reasoning>[\s\S]*?(?:<\/reasoning>|$)/gi, '')
+    .replace(/<\s*(?:think|thought|reasoning|analysis|reflection)(?:\s[^>]*)?>[\s\S]*?(?:<\/\s*(?:think|thought|reasoning|analysis|reflection)\s*>|$)/gi, '')
+    .replace(/<\|(?:thought|think|reasoning|analysis)\|>[\s\S]*?(?:<\|\/(?:thought|think|reasoning|analysis)\|>|$)/gi, '')
     .replace(/:::thinking[\s\S]*?(?::::|$)/gi, '')
+    .replace(/```(?:thought|thinking)[\s\S]*?(?:```|$)/gi, '')
+    .replace(/\[\/?(?:THINK|THOUGHT|REASONING)\][\s\S]*?(?:\[\/(?:THINK|THOUGHT|REASONING)\]|$)/gi, '')
+    .replace(/^(?:thought process|thinking process|思考过程|思考路径)\s*[:：][\s\S]*?(?:\n\n|$)/gi, '')
     .replace(/```[\s\S]*?```/gi, '代码块')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[.*?\]\(.*?\)/g, '')

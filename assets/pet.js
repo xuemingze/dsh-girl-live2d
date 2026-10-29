@@ -237,6 +237,8 @@
       if (ui && ui.composer && ui.composer.el && ui.composer.el.classList.contains('dshp-on')) addBox(ui.composer.el)
       if (ui && ui.bubble && ui.bubble.el && ui.bubble.el.classList.contains('dshp-on')) addBox(ui.bubble.el)
       if (ui && ui.hud && ui.hud.el && ui.hud.el.classList.contains('dshp-on')) addBox(ui.hud.el)
+      if (ui && ui.report && ui.report.el && ui.report.el.classList.contains('dshp-on')) addBox(ui.report.el)
+      if (ui && ui.mail && ui.mail.el && ui.mail.el.style.display !== 'none') addBox(ui.mail.el)
 
       const key = JSON.stringify(list)
       if (key !== lastReportedBounds) {
@@ -249,13 +251,16 @@
   /** 彻底剔除思考内容（<think>、<thought>、<reasoning> 标签及未闭合的前置思考链） */
   function stripThinking(text) {
     if (!text || typeof text !== 'string') return ''
-    return text
-      .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
-      .replace(/<thought>[\s\S]*?(?:<\/thought>|$)/gi, '')
-      .replace(/<reasoning>[\s\S]*?(?:<\/reasoning>|$)/gi, '')
-      .replace(/<analysis>[\s\S]*?(?:<\/analysis>|$)/gi, '')
+    let s = text
+      .replace(/<\s*(?:think|thought|reasoning|analysis|reflection)(?:\s[^>]*)?>[\s\S]*?(?:<\/\s*(?:think|thought|reasoning|analysis|reflection)\s*>|$)/gi, '')
+      .replace(/<\|(?:thought|think|reasoning|analysis)\|>[\s\S]*?(?:<\|\/(?:thought|think|reasoning|analysis)\|>|$)/gi, '')
       .replace(/:::thinking[\s\S]*?(?::::|$)/gi, '')
-      .trim()
+      .replace(/```(?:thought|thinking)[\s\S]*?(?:```|$)/gi, '')
+      .replace(/\[\/?(?:THINK|THOUGHT|REASONING)\][\s\S]*?(?:\[\/(?:THINK|THOUGHT|REASONING)\]|$)/gi, '')
+      .replace(/^(?:thought process|thinking process|思考过程|思考路径)\s*[:：][\s\S]*?(?:\n\n|$)/gi, '')
+    // 过滤尚未闭合的单标签前缀，例如流式传输前几个字节 "<th", "<think"
+    if (/^<[a-zA-Z|]{1,12}>?$/i.test(s.trim())) return ''
+    return s.trim()
   }
 
   async function apiFetch(url, opt = {}) {
@@ -1869,6 +1874,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 .dshp-root.dshp-sizing .dshp-panel{transition:opacity .16s ease}
 .dshp-panel.dshp-on{opacity:1;visibility:visible;
   transform:translateX(calc(-50% + var(--dshp-shift,0px))) translateY(var(--dshp-shift-y,0px))}
+/* 对话输入框：主人要求放置在脚部（避开头部的工作简报与对话气泡） */
+.dshp-composer{position:absolute;top:calc(100% + 44px * var(--dshp-ds))!important;bottom:auto!important;left:50%;
+  transform:translateX(calc(-50% + var(--dshp-shift,0px))) translateY(calc(-4px + var(--dshp-shift-y,0px)));z-index:15}
+.dshp-composer.dshp-on{transform:translateX(calc(-50% + var(--dshp-shift,0px))) translateY(var(--dshp-shift-y,0px))}
 .dshp-panel textarea{width:100%;box-sizing:border-box;resize:none;
   height:calc(64px * var(--dshp-ps));font:inherit;
   color:inherit;background:transparent;border:1px solid var(--dshp-line);
@@ -3026,13 +3035,17 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   function placePanel(panel) {
     if (!panel) return
     const vw = window.innerWidth
+    const vh = window.innerHeight
     const pad = 10
     panel.style.setProperty('--dshp-shift', '0px')
+    panel.style.setProperty('--dshp-shift-y', '0px')
     if (!panel.classList.contains('dshp-on')) return
-    const w = panel.getBoundingClientRect().width || 0
+    const rect = panel.getBoundingClientRect()
+    const w = rect.width || 0
     if (!w) return
     const r = ui.root.getBoundingClientRect()
-    const anchor = headScreenX() // 对准头顶，而不是整个场景的中心
+    const isComposer = panel.classList.contains('dshp-composer')
+    const anchor = isComposer ? (r.left + r.width / 2) : headScreenX() // 脚部输入框居中对准脚底，头部面板对准头顶
     // 面板基准是「以桌宠中心居中」（left:50% + translateX(-50%)），所以位移 = 锚点 - 根节点中心
     let shift = anchor - (r.left + r.width / 2)
     // 靠墙时往反方向挪，保证整个面板（含 × ）都在屏幕里
@@ -3040,9 +3053,28 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     if (left < pad) shift += pad - left
     else if (left + w > vw - pad) shift -= left + w - (vw - pad)
     panel.style.setProperty('--dshp-shift', Math.round(shift) + 'px')
-    // 纵向兜底：桌宠被拖到屏幕顶端时，面板别伸到屏幕外面去
-    const top = panel.getBoundingClientRect().top
-    panel.style.setProperty('--dshp-shift-y', top < pad ? Math.round(pad - top) + 'px' : '0px')
+
+    // 纵向避障与兜底：
+    // 脚部输入框：如果伸出屏幕下边缘，往上平移收缩，保证完全可见且不被任务栏截断
+    // 头部面板：如果伸出屏幕上边缘，往下平移
+    let shiftY = 0
+    if (isComposer) {
+      if (rect.bottom > vh - pad) {
+        shiftY = vh - pad - rect.bottom
+      }
+      if (rect.top + shiftY < pad) {
+        shiftY = pad - rect.top
+      }
+    } else {
+      const top = rect.top
+      if (top < pad) {
+        shiftY = pad - top
+      }
+      if (rect.bottom + shiftY > vh - pad) {
+        shiftY = vh - pad - rect.bottom
+      }
+    }
+    panel.style.setProperty('--dshp-shift-y', Math.round(shiftY) + 'px')
   }
 
   function clampPanels() {
@@ -3957,7 +3989,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           }
           buffer += text
           const displayBuf = stripThinking(buffer)
-          if (!displayBuf && (buffer.includes('<think>') || buffer.includes('<thought>'))) {
+          if (!displayBuf) {
             body.textContent = '思考中…'
           } else {
             body.textContent = displayBuf.length > 4000 ? '…' + displayBuf.slice(-4000) : displayBuf
@@ -3966,6 +3998,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           streaming = false
           buffer = String(text == null ? '' : text)
           const displayBuf = stripThinking(buffer)
+          if (!displayBuf && !opts.busy) {
+            api.hide()
+            return
+          }
           body.textContent = displayBuf
         }
         body.scrollTop = body.scrollHeight
@@ -8915,7 +8951,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         break
 
       case 'delta':
-        if (m.kind === 'reasoning' && !CFG.showReasoning) return
+        if (m.kind === 'reasoning') return
         agent.lastActivity = Date.now()
         if (!agent.hasStream) {
           agent.hasStream = true
@@ -8961,6 +8997,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             agent.lastText = cleanAssistantText.slice(0, 4000)
             ui.bubble.show(agent.lastText, { name: activeCharInfo().name, sticky: true })
             if (agent.lastText && agent.lastText.length > 40) pushReport('任务简报', agent.lastText)
+          } else {
+            setStatus('idle')
+            ui.bubble.hide()
           }
           // 伴侣口播语音统一由服务端智能摘要后广播 voice-speech 事件驱动播放，避免前端重复触发合成导致重音回声
         }

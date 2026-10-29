@@ -285,8 +285,12 @@ def resolve_voice_from_prompt(prompt: str, base_voice: str = DEFAULT_VOICE):
 
 def clean_tts_text(text: str) -> str:
     """彻底过滤思考链、代码语法与特殊控制字符，保留自然口播文本"""
-    t = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I)
-    t = re.sub(r"<analysis>[\s\S]*?</analysis>", "", t, flags=re.I)
+    t = re.sub(r"<\s*(?:think|thought|reasoning|analysis|reflection)(?:\s[^>]*)?>[\s\S]*?(?:<\/\s*(?:think|thought|reasoning|analysis|reflection)\s*>|$)", "", text, flags=re.I)
+    t = re.sub(r"<\|(?:thought|think|reasoning|analysis)\|>[\s\S]*?(?:<\|\/(?:thought|think|reasoning|analysis)\|>|$)", "", t, flags=re.I)
+    t = re.sub(r":::thinking[\s\S]*?(?::::|$)", "", t, flags=re.I)
+    t = re.sub(r"```(?:thought|thinking)[\s\S]*?(?:```|$)", "", t, flags=re.I)
+    t = re.sub(r"\[/?(?:THINK|THOUGHT|REASONING)\][\s\S]*?(?:\[/(?:THINK|THOUGHT|REASONING)\]|$)", "", t, flags=re.I)
+    t = re.sub(r"^(?:thought process|thinking process|思考过程|思考路径)\s*[:：][\s\S]*?(?:\n\n|$)", "", t, flags=re.I)
     t = re.sub(r"```[\s\S]*?```", "", t, flags=re.I)
     t = re.sub(r"`([^`]+)`", r"\1", t)
     t = re.sub(r"https?://\S+", "", t)
