@@ -314,6 +314,7 @@
       }
     } catch (err) {}
   }
+  restoreCfg()
   const MOTION_PRIORITY = { NONE: 0, IDLE: 1, NORMAL: 2, FORCE: 3 }
 
   const CHARACTERS = {
@@ -366,11 +367,52 @@
   let audioCtx = null
   let audioAnalyser = null
   let audioDataArray = null
+  let audioMasterGain = null
   let isSpeakingAudio = false
   let audioCurrentVolume = 0
   let currentAudioSource = null
-  let currentAudioGain = null
   let currentAudioElement = null
+
+  function getAudioVolume() {
+    const v = Number(CFG.ttsVolume)
+    if (isNaN(v)) return 1.0
+    return Math.max(0, Math.min(1, v))
+  }
+
+  function setAudioVolume(vol) {
+    const v = Math.max(0, Math.min(1, Number(vol) || 0))
+    CFG.ttsVolume = v
+    if (audioMasterGain && audioCtx) {
+      try {
+        audioMasterGain.gain.setValueAtTime(v, audioCtx.currentTime)
+      } catch (e) {}
+    }
+    if (currentAudioElement) {
+      try {
+        currentAudioElement.volume = v
+      } catch (e) {}
+    }
+  }
+
+  function ensureAudioPipeline() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    }
+    if (!audioAnalyser) {
+      audioAnalyser = audioCtx.createAnalyser()
+      audioAnalyser.fftSize = 256
+      audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount)
+    }
+    if (!audioMasterGain) {
+      audioMasterGain = audioCtx.createGain()
+      audioAnalyser.connect(audioMasterGain)
+      audioMasterGain.connect(audioCtx.destination)
+    }
+    const currentVol = getAudioVolume()
+    try {
+      audioMasterGain.gain.setValueAtTime(currentVol, audioCtx.currentTime)
+    } catch (e) {}
+  }
 
   function stopCurrentAudio() {
     if (currentAudioSource) {
@@ -407,19 +449,12 @@
     }
     stopCurrentAudio()
     try {
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-      }
-      if (!audioAnalyser) {
-        audioAnalyser = audioCtx.createAnalyser()
-        audioAnalyser.fftSize = 256
-        audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount)
-      }
+      ensureAudioPipeline()
       if (audioCtx.state === 'suspended') {
         await audioCtx.resume().catch(() => {})
       }
 
-      const vol = Math.max(0.1, Math.min(1, Number(CFG.ttsVolume ?? 1.0) || 1.0))
+      const vol = getAudioVolume()
 
       // 1. 安全获取音频二进制数据（自动处理鉴权 Header、多端口与编解码容错）
       let blob = null
@@ -509,21 +544,16 @@
           const source = audioCtx.createBufferSource()
           source.buffer = audioBuffer
 
-          const gainNode = audioCtx.createGain()
-          gainNode.gain.setValueAtTime(vol, audioCtx.currentTime)
-
           source.connect(audioAnalyser)
-          audioAnalyser.connect(gainNode)
-          gainNode.connect(audioCtx.destination)
 
           currentAudioSource = source
-          currentAudioGain = gainNode
           isSpeakingAudio = true
           setStatus('speaking')
 
           source.onended = () => {
             try { URL.revokeObjectURL(blobUrl) } catch (e) {}
             if (currentAudioSource === source) {
+              try { source.disconnect() } catch (e) {}
               currentAudioSource = null
               isSpeakingAudio = false
               audioCurrentVolume = 0
@@ -5996,19 +6026,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       volVal.style.minWidth = '36px'
       volVal.style.textAlign = 'right'
       volRange.addEventListener('input', () => {
-        CFG.ttsVolume = Number(volRange.value)
+        const val = Number(volRange.value)
+        setAudioVolume(val)
         persistCfg()
-        volVal.textContent = Math.round(CFG.ttsVolume * 100) + '%'
-        if (currentAudioGain && audioCtx) {
-          try {
-            currentAudioGain.gain.setValueAtTime(CFG.ttsVolume, audioCtx.currentTime)
-          } catch (e) {}
-        }
-        if (currentAudioElement) {
-          try {
-            currentAudioElement.volume = CFG.ttsVolume
-          } catch (e) {}
-        }
+        volVal.textContent = Math.round(val * 100) + '%'
       })
       volLabel.append(volRange, volVal)
 
