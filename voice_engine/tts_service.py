@@ -623,131 +623,115 @@ def calculate_signature_diff(left_bytes, right_bytes):
             changed_cells += 1
     return max(total_diff / cell_count, changed_cells / cell_count)
 
-def _foreground_scene_watcher_loop():
-    """
-    统一前台场景感知神经 (ForegroundSceneSensor)：
-    无需任何浏览器扩展或第三方插件，每 2.5 秒极速检测 Windows 前台窗口焦点，
-    智能识别 Steam、出行机票、租房、购物、视频娱乐，驱动单次主动关怀协议。
-    """
-    global _LATEST_VISION_EVENT, _IS_VIDEO_PLAYING
-    logger.info("[ForegroundSensor] 前台活动窗口与场景感知神经已激活启动")
+# ============================================================================
+# Windows 系统级任务变动钩子 (EVENT_SYSTEM_FOREGROUND) 与稳态感知
+# 遵循新架构：
+# 1. 0% CPU 损耗：由 Windows 内核在窗口切换时主动回调，绝不高频轮询截屏；
+# 2. 稳态防抖：只有用户在目标窗口稳定操作停留 > 15 秒，才判定为新任务情境；
+# 3. 伴侣端绝不擅自做主：只生成包含截图的待决包，静候 DSH 大脑多模态裁决。
+# ============================================================================
+WINEVENT_OUTOFCONTEXT = 0x0000
+WINEVENT_SKIPOWNPROCESS = 0x0002
+EVENT_SYSTEM_FOREGROUND = 0x0003
 
-    while True:
-        try:
-            time.sleep(2.5)
-            if not VISION_CONFIG.get("enabled"):
-                continue
+WinEventProcType = ctypes.WINFUNCTYPE(
+    None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+    wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD
+)
 
-            target = resolve_target_window()
-            if not target:
-                continue
+_CURRENT_FG_HWND = None
+_DWELL_TIMER = None
+_LATEST_TRANSITION = None
+_TRANSITION_LOCK = threading.Lock()
+_LAST_TRANSITION_EVAL_TIME = 0
+_TRANSITION_COOLDOWN_SEC = 600.0  # 10 分钟情境长冷却
 
-            title = target.get("title", "")
-            pname = target.get("processName", "").lower()
-            t_lower = title.lower()
-            now = time.time()
+IGNORE_PROCESS_NAMES = {
+    "taskmgr.exe", "shellexperiencehost.exe", "searchhost.exe",
+    "applicationframehost.exe", "lockapp.exe", "progman.exe"
+}
 
-            detected_category = None
-            question_text = None
+def _on_task_dwell_stabilized(target_hwnd):
+    global _LATEST_TRANSITION, _LAST_TRANSITION_EVAL_TIME
+    try:
+        now = time.time()
+        if (now - _LAST_TRANSITION_EVAL_TIME) < _TRANSITION_COOLDOWN_SEC:
+            return
 
-            # 1. 检测视频娱乐 (动态抑制高频差分)
-            is_video = any(k in t_lower for k in ["哔哩哔哩", "bilibili", "youtube", "爱奇艺", "腾讯视频", "优酷", "netflix", "potplayer"])
-            _IS_VIDEO_PLAYING = is_video
+        cur_fg = user32.GetForegroundWindow()
+        if cur_fg != target_hwnd:
+            return
 
-            # 2. 检测 Steam (游戏平台)
-            if pname == "steam.exe" or "steam" in t_lower:
-                detected_category = "steam"
-                question_text = "Steam 打开啦，主人今天准备玩什么游戏呢？"
+        target = resolve_target_window()
+        if not target:
+            return
 
-            # 3. 检测出行与特价机票 (携程、飞猪、去哪儿、12306、订票等)
-            elif any(k in t_lower for k in [
-                "机票", "航班", "携程", "去哪儿", "飞猪", "12306", "同程", "flights", "trip.com", "booking", "订票", "高铁票", "酒店预订"
-            ]):
-                detected_category = "travel"
-                question_text = "主人是在看去哪里的行程机票呀？要准备出发旅行了吗？"
+        title = (target.get("title") or "").strip()
+        pname = (target.get("processName") or "").lower()
+        if not title or pname in IGNORE_PROCESS_NAMES:
+            return
 
-            # 4. 检测租房找房 (自如、贝壳、链家、安居客、房源等)
-            elif any(k in t_lower for k in [
-                "租房", "自如", "贝壳", "链家", "安居客", "房源", "整租", "合租", "买房"
-            ]):
-                detected_category = "rental"
-                question_text = "主人是在看新房源或者租房信息吗？"
+        b64, w, h, _ = capture_screen_native(crop_foreground=True)
+        if not b64:
+            return
 
-            # 5. 检测购物选品 (淘宝、京东、拼多多、购物车、商品详情等)
-            elif any(k in t_lower for k in [
-                "淘宝", "京东", "拼多多", "购物车", "商品详情", "天猫", "taobao", "jd.com"
-            ]):
-                detected_category = "shopping"
-                question_text = "主人是在挑什么心仪的好物呀？"
+        _LAST_TRANSITION_EVAL_TIME = now
+        with _TRANSITION_LOCK:
+            _LATEST_TRANSITION = {
+                "id": f"trans-{int(now * 1000)}",
+                "timestamp": int(now * 1000),
+                "process": pname,
+                "title": title,
+                "shot": {
+                    "source": "builtin",
+                    "mime": "image/jpeg",
+                    "width": w,
+                    "height": h,
+                    "base64": b64,
+                }
+            }
+        logger.info(f"[TaskTransition] 任务情境稳态切换确认 (>15s): {pname} - '{title}', 已生成 DSH 多模态待决包")
+    except Exception as e:
+        logger.warning(f"[TaskTransition] 稳态任务处理异常: {e}")
 
-            # 6. 检测常规独立游戏
-            elif pname in KNOWN_GAMES_DICT or pname in CUSTOM_GAMES:
-                if pname != "steam.exe":
-                    gname = CUSTOM_GAMES.get(pname, KNOWN_GAMES_DICT.get(pname, "游戏"))
-                    detected_category = "game"
-                    question_text = f"主人正在玩 {gname} 呢，要加油哦~"
+def _win_event_proc(hHook, event, hwnd, idObject, idChild, dwEventThread, dwmsEventTime):
+    global _CURRENT_FG_HWND, _DWELL_TIMER
+    if not hwnd or event != EVENT_SYSTEM_FOREGROUND:
+        return
+    if hwnd == _CURRENT_FG_HWND:
+        return
+    _CURRENT_FG_HWND = hwnd
+    if _DWELL_TIMER is not None:
+        _DWELL_TIMER.cancel()
+        _DWELL_TIMER = None
 
-            # 冷却与单次询问触发校验 (默认场景冷却 10 分钟 = 600 秒)
-            if detected_category and question_text:
-                last_time = _LAST_INQUIRY_TIMES.get(detected_category, 0)
-                cooldown_sec = 600.0 if VISION_CONFIG.get("mode") == "companion" else 1200.0
-                if now - last_time >= cooldown_sec:
-                    _LAST_INQUIRY_TIMES[detected_category] = now
-                    with _VISION_LOCK:
-                        _LATEST_VISION_EVENT = {
-                            "id": f"scene-{int(now * 1000)}",
-                            "timestamp": int(now * 1000),
-                            "category": detected_category,
-                            "title": title,
-                            "process": pname,
-                            "text": question_text,
-                            "isProactiveInquiry": True,
-                        }
-                    logger.info(f"[ForegroundSensor] 命中场景关怀: {detected_category} -> '{title}'")
-        except Exception as e:
-            pass
+    _DWELL_TIMER = threading.Timer(15.0, _on_task_dwell_stabilized, [hwnd])
+    _DWELL_TIMER.daemon = True
+    _DWELL_TIMER.start()
 
-def _screen_vision_monitor_loop():
-    """桌面灵 32x18 RGB 散列变动检测 (融合视频流抑制与防抖)"""
-    global _LAST_SCREEN_SIGNATURE, _LAST_CANDIDATE_TIME, _LAST_OBSERVED_RATIO, _LAST_AUTO_REPLY_TIME, _LATEST_VISION_EVENT
-    while True:
-        try:
-            time.sleep(3.0)
-            if not VISION_CONFIG.get("enabled"):
-                continue
+_WINEVENT_CALLBACK_REF = WinEventProcType(_win_event_proc)
 
-            # 若正在播放视频或全屏独立游戏，抑制纯视觉差分打扰
-            if _IS_VIDEO_PLAYING:
-                continue
+def _win_event_hook_thread_func():
+    try:
+        hook = user32.SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            0, _WINEVENT_CALLBACK_REF, 0, 0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+        )
+        if not hook:
+            logger.warning("[TaskTransition] SetWinEventHook 安装失败")
+            return
+        logger.info("[TaskTransition] Windows EVENT_SYSTEM_FOREGROUND 钩子已激活 (0% CPU 稳态感知)")
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        user32.UnhookWinEvent(hook)
+    except Exception as e:
+        logger.warning(f"[TaskTransition] WinEvent 线程异常: {e}")
 
-            b64, w, h, img = capture_screen_native(crop_foreground=False)
-            thumb = img.resize((32, 18), Image.Resampling.BOX)
-            current_sig = thumb.tobytes()
-
-            if _LAST_SCREEN_SIGNATURE is None:
-                _LAST_SCREEN_SIGNATURE = current_sig
-                continue
-
-            diff = calculate_signature_diff(_LAST_SCREEN_SIGNATURE, current_sig)
-            _LAST_OBSERVED_RATIO = diff
-
-            now = time.time()
-            cooldown = 35.0 if VISION_CONFIG.get("mode") == "companion" else 90.0
-
-            # 遵循主人架构原则：严禁本地像素差分盲目发起弹窗（刷抖音/看视频会导致差分高频误判）
-            # 伴侣本地只作为感官神经与嘴巴，不再以差分算法擅自替主人做弹窗决断
-            if diff >= CANDIDATE_THRESHOLD:
-                _LAST_SCREEN_SIGNATURE = current_sig
-            _LAST_CANDIDATE_TIME = 0
-        except Exception:
-            pass
-
-# 启动后台视觉神经与前台场景感知双线程
-_vision_worker_thread = threading.Thread(target=_screen_vision_monitor_loop, daemon=True)
-_vision_worker_thread.start()
-
-_scene_worker_thread = threading.Thread(target=_foreground_scene_watcher_loop, daemon=True)
-_scene_worker_thread.start()
+_hook_thread = threading.Thread(target=_win_event_hook_thread_func, daemon=True)
+_hook_thread.start()
 
 
 class TTSServiceHandler(BaseHTTPRequestHandler):
@@ -860,6 +844,9 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             audio_base64 = qs.get("audioBase64", [""])[0]
             self._save_to_pool_bytes(name=name, audio_base64=audio_base64)
             return
+        elif clean_path in ("/perception/task-transition", "/dsh-pet/perception/task-transition"):
+            self._handle_perception_task_transition()
+            return
         elif clean_path in ("/perception/status", "/dsh-pet/perception/status"):
             self._handle_perception_status()
             return
@@ -912,6 +899,9 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self._save_to_pool_bytes(name=payload.get("name", ""), audio_base64=payload.get("audioBase64", ""))
         elif self.path.startswith(("/delete-pool-voice", "/delete_voice", "/dsh-pet/delete-pool-voice")):
             self._handle_delete_voice()
+        elif clean_path in ("/perception/task-transition", "/dsh-pet/perception/task-transition"):
+            self._handle_perception_task_transition()
+            return
         elif clean_path in ("/perception/status", "/dsh-pet/perception/status"):
             self._handle_perception_status()
             return
@@ -1028,6 +1018,11 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error(f"[Perception] Screen capture error: {e}")
             self._send_error_json(500, f"屏幕捕获异常: {e}")
+
+    def _handle_perception_task_transition(self):
+        with _TRANSITION_LOCK:
+            data = _LATEST_TRANSITION
+        self._send_json(200, {"ok": True, "transition": data})
 
     def _handle_perception_test_inquiry(self):
         try:

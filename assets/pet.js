@@ -9686,6 +9686,29 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         }
         break
 
+      case 'proactive-care':
+        if (m.text && !m.text.includes('[SILENCE]')) {
+          const cueMatch = m.text.match(/（([^）]+)）|\(([^)]+)\)/)
+          const actionCue = cueMatch ? (cueMatch[1] || cueMatch[2]).trim() : ''
+          const speechText = m.text.replace(/（[^）]+）|\([^)]+\)/g, '').trim() || m.text
+
+          if (actionCue) {
+            triggerActionByCue(actionCue)
+          }
+          if (ui.bubble) {
+            ui.bubble.show(m.text, { name: activeCharInfo().name, sticky: false, duration: 8000 })
+          }
+          if (CFG.sound !== false && typeof speakCharacterText === 'function') {
+            speakCharacterText(speechText, activeCharacterId)
+          }
+          showProactiveCareCard({
+            category: m.category || 'travel',
+            text: m.text,
+            title: m.title || '💡 伴侣温馨关怀',
+          })
+        }
+        break
+
       case 'voice-speech-stop':
         if (activeTtsAudio) {
           try {
@@ -10283,29 +10306,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }, stepMs)
     }
 
-    setInterval(async () => {
-      if (CFG.screenVision === false && CFG.screenVisionEnabled === false) return
-      if (agent.status !== 'idle') return
-      try {
-        const res = await perceptionFetch('/perception/status')
-        if (res && res.ok && res.screenSensor) {
-          const ev = res.screenSensor.lastEvent
-          if (ev && ev.id && ev.id !== lastHandledVisionId) {
-            lastHandledVisionId = ev.id
-            if (CFG.screenVisionMode !== 'quiet' && ev.text) {
-              if (ui.bubble) {
-                ui.bubble.show(ev.text, { name: activeCharInfo().name, duration: 8000 })
-              }
-              if (CFG.sound !== false && typeof speakCharacterText === 'function') {
-                speakCharacterText(ev.text, activeCharacterId)
-              }
-              // 触发单次关怀卡片，启动用户回复即截图互动链路
-              showProactiveCareCard(ev)
-            }
-          }
-        }
-      } catch (e) {}
-    }, 2500)
+    // 遵循主人核心架构准则（第二步架构跃迁）：
+    // 伴侣前端彻底剥离粗暴的 2.5s 状态轮询与本地差分弹窗脚本；
+    // 视觉稳态感知已由底层 OS WinEvent 钩子与 DSH [SILENCE] 门禁协议接管，
+    // 前端作为纯粹的套皮与五官，通过 EventSource ('proactive-care') 纯事件驱动响应。
 
     // 开机初始同步自定义游戏与视觉设置至感知中枢
     setTimeout(() => {
