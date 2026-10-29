@@ -179,13 +179,15 @@
   let dockAutoHide = null
   let desktopRoamEngine = null
   let isPetHovered = false
+  let isPetDragging = false
+  let dragInertiaRaf = 0
 
   function isSettingOrInteractionOpen() {
     const isMenuOpen = !!(ui && ui.root && ui.root.classList.contains('dshp-open')) ||
                        !!(ui && ui.menu && ui.menu.el && ui.menu.el.classList.contains('dshp-on')) ||
                        !!(ui && ui.composer && ui.composer.el && ui.composer.el.classList.contains('dshp-on')) ||
                        !!(ui && ui.hud && ui.hud.el && ui.hud.el.classList.contains('dshp-open'))
-    return isMenuOpen || isPetHovered
+    return isMenuOpen || isPetHovered || isPetDragging
   }
 
   async function loadModules() {
@@ -367,6 +369,7 @@
   let audioCtx = null
   let audioAnalyser = null
   let audioDataArray = null
+  let audioTimeDomainArray = null
   let audioMasterGain = null
   let isSpeakingAudio = false
   let audioCurrentVolume = 0
@@ -401,7 +404,9 @@
     if (!audioAnalyser) {
       audioAnalyser = audioCtx.createAnalyser()
       audioAnalyser.fftSize = 256
+      audioAnalyser.smoothingTimeConstant = 0.5
       audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount)
+      audioTimeDomainArray = new Uint8Array(audioAnalyser.fftSize)
     }
     if (!audioMasterGain) {
       audioMasterGain = audioCtx.createGain()
@@ -412,6 +417,59 @@
     try {
       audioMasterGain.gain.setValueAtTime(currentVol, audioCtx.currentTime)
     } catch (e) {}
+  }
+
+  function sampleAudioMouthOpen(dt) {
+    rig.talkPhase = (rig.talkPhase || 0) + dt
+    let rawTarget = 0
+    let hasAnalyserSignal = false
+
+    if (isSpeakingAudio && audioAnalyser && currentAudioSource) {
+      try {
+        if (!audioTimeDomainArray || audioTimeDomainArray.length !== audioAnalyser.fftSize) {
+          audioTimeDomainArray = new Uint8Array(audioAnalyser.fftSize)
+        }
+        audioAnalyser.getByteTimeDomainData(audioTimeDomainArray)
+        let sumSq = 0
+        for (let i = 0; i < audioTimeDomainArray.length; i++) {
+          const v = (audioTimeDomainArray[i] - 128) / 128
+          sumSq += v * v
+        }
+        const rms = Math.sqrt(sumSq / audioTimeDomainArray.length)
+
+        if (audioDataArray) {
+          audioAnalyser.getByteFrequencyData(audioDataArray)
+        }
+        let freqSum = 0
+        const maxBin = audioDataArray ? Math.min(42, audioDataArray.length) : 0
+        for (let i = 2; i < maxBin; i++) {
+          freqSum += audioDataArray[i]
+        }
+        const freqAvg = maxBin > 2 ? freqSum / ((maxBin - 2) * 255) : 0
+
+        const energy = Math.max(rms * 4.2, freqAvg * 2.4)
+        if (energy > 0.015) {
+          hasAnalyserSignal = true
+          const syllableWave = 0.85 + 0.15 * Math.sin(rig.talkPhase * 15)
+          rawTarget = clamp((energy - 0.015) * 1.45 * syllableWave, 0, 1.0)
+        } else {
+          hasAnalyserSignal = true
+          rawTarget = 0
+        }
+      } catch (e) {}
+    }
+
+    if (!hasAnalyserSignal && (isSpeakingAudio || rig.talking)) {
+      // 降级 HTML5 Audio 播放或流式吐字阶段：采用多频自然音节包络驱动口型开合
+      const p = rig.talkPhase
+      const env = 0.5 + 0.35 * Math.sin(p * 11.5) + 0.25 * Math.sin(p * 19.3) + 0.15 * Math.cos(p * 7.1)
+      rawTarget = clamp(env, 0.05, 0.92)
+    }
+
+    const speed = rawTarget > audioCurrentVolume ? 26 : 16
+    audioCurrentVolume += (rawTarget - audioCurrentVolume) * clamp(dt * speed, 0, 1)
+    if (audioCurrentVolume < 0.01) audioCurrentVolume = 0
+    return clamp(audioCurrentVolume, 0, 1)
   }
 
   function stopCurrentAudio() {
@@ -435,6 +493,7 @@
       currentAudioElement = null
     }
     isSpeakingAudio = false
+    rig.talking = false
     audioCurrentVolume = 0
   }
 
@@ -548,6 +607,8 @@
 
           currentAudioSource = source
           isSpeakingAudio = true
+          rig.talking = true
+          if (frameRateGovernor) frameRateGovernor.touch()
           setStatus('speaking')
 
           source.onended = () => {
@@ -556,6 +617,7 @@
               try { source.disconnect() } catch (e) {}
               currentAudioSource = null
               isSpeakingAudio = false
+              rig.talking = false
               audioCurrentVolume = 0
               setStatus('idle')
             }
@@ -572,12 +634,15 @@
       audio.volume = vol
       currentAudioElement = audio
       isSpeakingAudio = true
+      rig.talking = true
+      if (frameRateGovernor) frameRateGovernor.touch()
       setStatus('speaking')
       audio.onended = () => {
         try { URL.revokeObjectURL(blobUrl) } catch (e) {}
         if (currentAudioElement === audio) {
           currentAudioElement = null
           isSpeakingAudio = false
+          rig.talking = false
           audioCurrentVolume = 0
           setStatus('idle')
         }
@@ -587,6 +652,7 @@
         if (currentAudioElement === audio) {
           currentAudioElement = null
           isSpeakingAudio = false
+          rig.talking = false
           audioCurrentVolume = 0
           setStatus('idle')
         }
@@ -597,12 +663,14 @@
         if (currentAudioElement === audio) {
           currentAudioElement = null
           isSpeakingAudio = false
+          rig.talking = false
           audioCurrentVolume = 0
           setStatus('idle')
         }
       })
     } catch (e) {
       isSpeakingAudio = false
+      rig.talking = false
       console.warn('[桌宠语音] playAudioWithLipSync 异常:', e)
     }
   }
@@ -2211,10 +2279,24 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
     }
 
-    // 说话口型：只在真的在吐字时才动嘴，空闲时嘴巴是放松的
-    if (CFG.talkMouth && rig.talking) {
-      rig.talkPhase += dt
-      add('ParamMouthOpenY', 0.28 + 0.16 * Math.sin(rig.talkPhase * 11))
+    // 说话口型：实时音频频谱包络 + 多频音节韵律驱动，空闲时嘴巴自然闭合
+    if (CFG.talkMouth && (isSpeakingAudio || rig.talking)) {
+      if (frameRateGovernor) frameRateGovernor.touch()
+      const mouthOpen = sampleAudioMouthOpen(dt)
+      // 强制覆盖 ParamMouthOpenY，防止被静态表情锁死在闭嘴状态
+      delta.set('ParamMouthOpenY', mouthOpen)
+      if (!claimed.has('ParamMouthForm')) {
+        add('ParamMouthForm', 0.16 * Math.sin((rig.talkPhase || 0) * 6.5))
+      }
+      if (activeCharacterId === 'tutu') {
+        delta.set('ParamMouthOpenY2', mouthOpen * 0.65)
+        delta.set('ParamMouthOpenY3', mouthOpen * 0.5)
+      } else if (activeCharacterId === 'yuyu') {
+        delta.set('ParamMouthOpenY5', mouthOpen * 0.7)
+        delta.set('ParamMouthOpenY8', mouthOpen * 0.6)
+      }
+    } else {
+      audioCurrentVolume = 0
     }
 
     // 一次性参数脉冲（爱心粒子 / 心跳），到期自动停
@@ -3140,6 +3222,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     root.style.top = Math.round(yy) + 'px'
     root.style.bottom = 'auto'
     root.dataset.edge = edge
+    if (desktopRoamEngine && typeof desktopRoamEngine.setAnchor === 'function') {
+      const r = root.getBoundingClientRect()
+      desktopRoamEngine.setAnchor(r.left, r.top)
+    }
   }
 
   /**
@@ -3161,11 +3247,16 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     if (layout.x != null && layout.y != null) {
       const w = root.getBoundingClientRect().width || 0
       // issue #13：X 以前没夹 —— 换显示器/窗口变小后她会整只落在屏幕外 → 也夹一下
-      root.style.left = clampX(layout.x, w, window.innerWidth) + 'px'
-      root.style.top = clampY(layout.y, h, vh) + 'px'
+      const cx = clampX(layout.x, w, window.innerWidth)
+      const cy = clampY(layout.y, h, vh)
+      root.style.left = cx + 'px'
+      root.style.top = cy + 'px'
       root.style.right = 'auto'
       root.style.bottom = 'auto'
       root.dataset.edge = ''
+      if (desktopRoamEngine && typeof desktopRoamEngine.setAnchor === 'function') {
+        desktopRoamEngine.setAnchor(cx, cy)
+      }
       return
     }
     // 老存档 / 首次启动：按角落算一次，然后就地存成 edge 形式（下次就是新的了）
@@ -3389,8 +3480,12 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     gaze.pointer.at = performance.now()
     if (frameRateGovernor) frameRateGovernor.touch()
     try {
-      if (ui && ui.root) {
+      if (ui && ui.root && !isPetDragging) {
         const on = hitTest(x, y) || overDock(x, y)
+        isPetHovered = !!on
+        if (desktopRoamEngine && typeof desktopRoamEngine.setBlocked === 'function') {
+          desktopRoamEngine.setBlocked(isSettingOrInteractionOpen(), 'hover')
+        }
         if (on) {
           ui.root.classList.add('dshp-hover')
         }
@@ -3534,22 +3629,38 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
   function dragInertia(vx, vy) {
     const el = ui && ui.root
     if (!el) return
+    if (dragInertiaRaf) {
+      cancelAnimationFrame(dragInertiaRaf)
+      dragInertiaRaf = 0
+    }
     let px = parseFloat(el.style.left) || 0
     let py = parseFloat(el.style.top) || 0
     let sx = vx
     let sy = vy
     const h = el.getBoundingClientRect().height
     const step = () => {
+      if (isPetDragging) {
+        dragInertiaRaf = 0
+        return
+      }
       sx *= 0.85
       sy *= 0.85
       px = clamp(px + sx, -40, window.innerWidth - 60)
       py = clampY(py + sy, h, window.innerHeight)
       el.style.left = px + 'px'
       el.style.top = py + 'px'
-      if (Math.abs(sx) > 0.4 || Math.abs(sy) > 0.4) requestAnimationFrame(step)
-      else saveLayout({ x: Math.round(px), y: Math.round(py), edge: null, edgeY: null, corner: null })
+      if (desktopRoamEngine && typeof desktopRoamEngine.setAnchor === 'function') {
+        desktopRoamEngine.setAnchor(px, py)
+      }
+      if (Math.abs(sx) > 0.4 || Math.abs(sy) > 0.4) {
+        dragInertiaRaf = requestAnimationFrame(step)
+      } else {
+        dragInertiaRaf = 0
+        saveLayout({ x: Math.round(px), y: Math.round(py), edge: null, edgeY: null, corner: null })
+        reportBoundsToShell()
+      }
     }
-    requestAnimationFrame(step)
+    dragInertiaRaf = requestAnimationFrame(step)
   }
 
   /**
@@ -4160,6 +4271,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           // 原因：原来只认 hitTest（她模型身上），而工具栏在她**下方**、不在模型掩码里。
           // 现在把「鼠标在工具栏矩形内」也算作悬停，并且离开后多留 900ms。
           const on = hitTest(e.clientX, e.clientY) || overDock(e.clientX, e.clientY)
+          isPetHovered = !!on
+          if (desktopRoamEngine && typeof desktopRoamEngine.setBlocked === 'function') {
+            desktopRoamEngine.setBlocked(isSettingOrInteractionOpen(), 'hover')
+          }
           if (dockAutoHide && overDock(e.clientX, e.clientY)) dockAutoHide.touch()
           if (on) {
             root.classList.add('dshp-hover')
@@ -4189,7 +4304,9 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             root.style.top = ny + 'px'
             root.style.right = 'auto'
             root.style.bottom = 'auto'
-
+            if (desktopRoamEngine && typeof desktopRoamEngine.onDragMove === 'function') {
+              desktopRoamEngine.onDragMove(nx, ny)
+            }
           }
         }
         // 只记录坐标，真正的跟随在 gazeTick 里限速执行——
@@ -4210,13 +4327,29 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         // 点在鲸鱼娘身上：吃掉这次点击，别让下面的 DSH 界面也响应
         e.stopPropagation()
         e.preventDefault()
+        if (dragInertiaRaf) {
+          cancelAnimationFrame(dragInertiaRaf)
+          dragInertiaRaf = 0
+        }
         dragging = true
+        isPetDragging = true
         dragMoved = false
+        const r = root.getBoundingClientRect()
+        if (desktopRoamEngine) {
+          if (typeof desktopRoamEngine.onDragStart === 'function') {
+            desktopRoamEngine.onDragStart(r.left, r.top)
+          } else if (typeof desktopRoamEngine.setAnchor === 'function') {
+            desktopRoamEngine.setAnchor(r.left, r.top)
+          }
+        }
+        root.style.left = Math.round(r.left) + 'px'
+        root.style.top = Math.round(r.top) + 'px'
+        root.style.right = 'auto'
+        root.style.bottom = 'auto'
         if (springPhysics) springPhysics.press()
         if (dockAutoHide) dockAutoHide.show()
         if (frameRateGovernor) frameRateGovernor.touch()
         delete root.dataset.edge // 一拖就离开墙，别再显示「贴着左边」
-        const r = root.getBoundingClientRect()
         start = { mx: e.clientX, my: e.clientY, left: r.left, top: r.top }
       },
       true,
@@ -4229,10 +4362,15 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         if (frameRateGovernor) frameRateGovernor.touch()
         if (!dragging) return
         dragging = false
+        isPetDragging = false
         if (dragMoved) {
-          if (desktopRoamEngine && typeof desktopRoamEngine.setAnchor === 'function') {
-            const r = root.getBoundingClientRect()
-            desktopRoamEngine.setAnchor(r.left, r.top)
+          const r = root.getBoundingClientRect()
+          if (desktopRoamEngine) {
+            if (typeof desktopRoamEngine.onDragEnd === 'function') {
+              desktopRoamEngine.onDragEnd(r.left, r.top)
+            } else if (typeof desktopRoamEngine.setAnchor === 'function') {
+              desktopRoamEngine.setAnchor(r.left, r.top)
+            }
           }
           reportBoundsToShell()
           // 松手：先看要不要贴边吸附，没吸附上再走自由惯性
@@ -4240,6 +4378,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           drag.vx = 0
           drag.vy = 0
         } else {
+          if (desktopRoamEngine && typeof desktopRoamEngine.onDragEnd === 'function') {
+            const r = root.getBoundingClientRect()
+            desktopRoamEngine.onDragEnd(r.left, r.top)
+          }
           poke(e.clientX, e.clientY)
           if (dockAutoHide) dockAutoHide.show()
         }
@@ -4251,6 +4393,11 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     document.addEventListener('pointercancel', () => {
       if (springPhysics) springPhysics.release()
       dragging = false
+      isPetDragging = false
+      if (desktopRoamEngine && typeof desktopRoamEngine.onDragEnd === 'function') {
+        const r = root.getBoundingClientRect()
+        desktopRoamEngine.onDragEnd(r.left, r.top)
+      }
       start = null
     })
 

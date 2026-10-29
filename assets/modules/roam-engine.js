@@ -201,12 +201,68 @@ export class DesktopRoamEngine {
   }
 
   setAnchor(x, y) {
+    if (this.currentStrategy && (this.state === 'WALKING' || this.state === 'RETURNING')) {
+      try {
+        this.currentStrategy.exit(this.getStrategyContext())
+      } catch (e) {}
+      this.currentStrategy = null
+    }
+    this.state = 'IDLE'
+    this.pausedReason = null
     this.anchorX = x
     this.anchorY = y
     this.x = x
     this.y = y
     this.targetX = x
     this.targetY = y
+    this.nextPatrolTime = Date.now() + 30000
+  }
+
+  onDragStart(x, y) {
+    this.isDragging = true
+    if (this.currentStrategy) {
+      try {
+        this.currentStrategy.exit(this.getStrategyContext())
+      } catch (e) {}
+      this.currentStrategy = null
+    }
+    this.state = 'IDLE'
+    this.pausedReason = null
+    if (typeof x === 'number' && !isNaN(x)) {
+      this.x = x
+      this.targetX = x
+      this.anchorX = x
+    }
+    if (typeof y === 'number' && !isNaN(y)) {
+      this.y = y
+      this.targetY = y
+      this.anchorY = y
+    }
+    this.nextPatrolTime = Date.now() + 30000
+  }
+
+  onDragMove(x, y) {
+    this.isDragging = true
+    this.state = 'IDLE'
+    this.pausedReason = null
+    if (typeof x === 'number' && !isNaN(x)) {
+      this.x = x
+      this.targetX = x
+      this.anchorX = x
+    }
+    if (typeof y === 'number' && !isNaN(y)) {
+      this.y = y
+      this.targetY = y
+      this.anchorY = y
+    }
+  }
+
+  onDragEnd(x, y) {
+    this.isDragging = false
+    this.setAnchor(
+      typeof x === 'number' && !isNaN(x) ? x : this.x,
+      typeof y === 'number' && !isNaN(y) ? y : this.y,
+    )
   }
 
   returnToAnchor() {
@@ -262,7 +318,7 @@ export class DesktopRoamEngine {
   }
 
   step(dt) {
-    if (!this.enabled || this.isBlockedByUI) {
+    if (this.isDragging || !this.enabled || this.isBlockedByUI) {
       this.nextPatrolTime = Math.max(this.nextPatrolTime, Date.now() + 25000)
       return
     }
