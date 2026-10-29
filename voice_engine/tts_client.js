@@ -14,6 +14,12 @@ import fs from 'node:fs'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const TTS_SCRIPT = path.join(HERE, 'tts_service.py')
 
+const keepAliveAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 5,
+  keepAliveMsecs: 60000,
+})
+
 let ttsChild = null
 let spawnPromise = null
 
@@ -202,11 +208,12 @@ export async function requestTTS(textOrOpts, characterId = 'whale', port = 9880)
         port,
         path: '/tts',
         method: 'POST',
+        agent: keepAliveAgent,
         headers: {
           'Content-Type': 'application/json; charset=utf-8',
           'Content-Length': Buffer.byteLength(payload),
         },
-        timeout: 12000,
+        timeout: 18000,
       },
       (res) => {
         if (res.statusCode !== 200) {

@@ -51,4 +51,31 @@ assert.strictEqual(status.enabled, true, '感官默认开启')
 assert.strictEqual(status.mode, 'builtin_standalone', '未探测到外部插件时无缝走内置原生模式')
 console.log('✅ ScreenSensorManager 状态探测验证通过:', status)
 
+console.log('--- 测试 4: 电影/视频/游戏连续动态画面抑制 (Dynamic Motion Stream) ---')
+const dynamicDetector = new ScreenChangeDetector({
+  stableWaitMs: 300,
+  motionWindowMs: 5000,
+  motionFreqThreshold: 3,
+  calmDurationMs: 2000,
+})
+dynamicDetector.evaluate(frameA, 'w1', 1000) // 基准帧
+
+// 模拟电影画面快速剧烈变动 (4 次变动帧)
+const f1 = Buffer.alloc(SIGNATURE_BYTE_LENGTH, 130)
+const f2 = Buffer.alloc(SIGNATURE_BYTE_LENGTH, 170)
+const f3 = Buffer.alloc(SIGNATURE_BYTE_LENGTH, 210)
+const f4 = Buffer.alloc(SIGNATURE_BYTE_LENGTH, 240)
+
+dynamicDetector.evaluate(f1, 'w1', 1100)
+dynamicDetector.evaluate(f2, 'w1', 1200)
+dynamicDetector.evaluate(f3, 'w1', 1300)
+const streamRes = dynamicDetector.evaluate(f4, 'w1', 1400)
+assert.strictEqual(streamRes.isDynamicStream, true, '连续高频变动进入动态多媒体流抑制模式')
+
+// 模拟电影中人物短暂停顿 350ms (超过普通 stableWaitMs，但不应触发工作场景变更)
+const pauseRes = dynamicDetector.evaluate(f4, 'w1', 1750)
+assert.strictEqual(pauseRes.changed, false, '动态流抑制生效：电影短暂短暂停顿绝不触发误报')
+assert.strictEqual(pauseRes.reason, 'dynamic_stream_holding')
+console.log('✅ 电影/视频/游戏连续动态画面防误报抑制验证通过！')
+
 console.log('\n🎉 视觉感官神经单元测试全部通过！')

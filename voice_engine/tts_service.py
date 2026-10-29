@@ -32,6 +32,35 @@ DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
 LOCAL_VOICES_POOL_DIR = os.environ.get("DSH_VOICES_POOL_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices_pool"))
 _LATEST_AUDIO_BUFFER: Optional[bytes] = None
 
+# 内存 LRU 音频快速缓存（最高 200 条，针对伴侣高频互动台词实现 0ms 闪电发音）
+import threading, time
+_AUDIO_CACHE = {}
+_AUDIO_CACHE_KEYS = []
+_AUDIO_CACHE_LOCK = threading.Lock()
+_LAST_TTS_TIME = time.time()
+
+def _get_from_audio_cache(key):
+    with _AUDIO_CACHE_LOCK:
+        if key in _AUDIO_CACHE:
+            try:
+                _AUDIO_CACHE_KEYS.remove(key)
+                _AUDIO_CACHE_KEYS.append(key)
+            except ValueError:
+                pass
+            return _AUDIO_CACHE[key]
+    return None
+
+def _put_into_audio_cache(key, val):
+    with _AUDIO_CACHE_LOCK:
+        if key in _AUDIO_CACHE:
+            _AUDIO_CACHE[key] = val
+            return
+        if len(_AUDIO_CACHE_KEYS) >= 200:
+            oldest = _AUDIO_CACHE_KEYS.pop(0)
+            _AUDIO_CACHE.pop(oldest, None)
+        _AUDIO_CACHE_KEYS.append(key)
+        _AUDIO_CACHE[key] = val
+
 # 预设音色库定义
 AVAILABLE_VOICES = [
     {"id": "zh-CN-XiaoxiaoNeural", "name": "晓晓 (温柔治愈姐姐)", "gender": "female", "style": "gentle"},
@@ -620,10 +649,27 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        global _LAST_TTS_TIME
+        _LAST_TTS_TIME = time.time()
+
+        # 优先读取快速内存音频缓存
+        cache_key = (clean_text, voice, rate, pitch)
+        cached_wav = _get_from_audio_cache(cache_key)
+        if cached_wav:
+            logger.info(f"[TTS Service] 极速命中音频缓存: '{clean_text[:35]}...' ({len(cached_wav)} 字节, 0ms)")
+            self.send_response(200)
+            self._send_cors()
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(cached_wav)))
+            self.end_headers()
+            self.wfile.write(cached_wav)
+            return
+
         logger.info(f"[TTS Service] [{char_id}] 正在合成: '{clean_text[:35]}...' (音色: {voice}, 语速: {rate}, 音调: {pitch})")
 
         try:
             wav_bytes = asyncio.run(_synthesize_edge_tts_to_wav(clean_text, voice, rate=rate, pitch=pitch))
+            _put_into_audio_cache(cache_key, wav_bytes)
             self.send_response(200)
             self._send_cors()
             self.send_header("Content-Type", "audio/wav")
@@ -743,6 +789,29 @@ if __name__ == "__main__":
                         pass
                     os._exit(0)
         threading.Thread(target=_watch_host, daemon=True).start()
+
+    # 启动后台温床守护协程（每 45 秒在静默期发起微小预热，杜绝静默一段时间后的 Edge TTS 12秒握手延迟）
+    def _keep_warm_worker():
+        global _LAST_TTS_TIME
+        # 启动即刻预热一次
+        try:
+            time.sleep(1.0)
+            asyncio.run(_synthesize_edge_tts_to_wav("。", DEFAULT_VOICE, "+0%", "+0Hz"))
+            logger.info("[TTS Service] 初始预热完成，声带网络链路已激活")
+        except Exception as e:
+            logger.debug(f"[TTS Service] 初始预热微小波动: {e}")
+
+        while True:
+            try:
+                time.sleep(45.0)
+                if time.time() - _LAST_TTS_TIME >= 40.0:
+                    logger.debug("[TTS Service] 执行守护温床预热，保持 TLS 与 WebSocket 长链路畅通...")
+                    asyncio.run(_synthesize_edge_tts_to_wav("。", DEFAULT_VOICE, "+0%", "+0Hz"))
+                    _LAST_TTS_TIME = time.time()
+            except Exception as e:
+                logger.debug(f"[TTS Service] 守护温床预热微小波动: {e}")
+
+    threading.Thread(target=_keep_warm_worker, daemon=True).start()
 
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("127.0.0.1", args.port), TTSServiceHandler)

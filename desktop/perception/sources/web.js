@@ -89,6 +89,21 @@ export class WebPagePerceptionSource extends PerceptionSource {
     this._silenceTimer = setTimeout(() => {
       this.onUserIgnored()
     }, 20000)
+    if (this._silenceTimer.unref) this._silenceTimer.unref()
+  }
+
+  /**
+   * 模拟触发测试询问（绕过冷却限制，供面板一键体验）
+   */
+  triggerTestInquiry(category = 'travel') {
+    const prompts = {
+      travel: '主人是在看去哪里的行程机票呀？',
+      rental: '主人是在看新房源或者租房信息吗？',
+      shopping: '主人是在挑什么心仪的好物呀？',
+    }
+    const questionText = prompts[category] || prompts.travel
+    this.triggerSingleInquiry(category, questionText, { test: true })
+    return { ok: true, category, questionText }
   }
 
   /**

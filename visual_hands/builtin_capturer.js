@@ -3,8 +3,8 @@
  * 
  * 原生内置前台活动窗口截图器 (BuiltinActiveWindowCapturer)
  * 核心准则：
- * 1. 开箱即用：即使宿主没有安装 dsh-plugin-appshot，本模块也能独立完成前台活动窗口截取。
- * 2. 反向防自捕获 (Anti-Self-Capture)：捕获时自动剔除桌宠自身的透明悬浮窗口区域，绝不截取到伴侣本体。
+ * 1. 开箱即用：即使宿主没有安装 dsh-plugin-appshot，本模块也能独立完成截取。
+ * 2. 纯净稳定：使用 PowerShell -EncodedCommand (UTF-16LE Base64) 执行，零转义坑、零参数歧义。
  */
 
 import { exec } from 'node:child_process'
@@ -14,7 +14,7 @@ const execAsync = promisify(exec)
 
 export class BuiltinActiveWindowCapturer {
   constructor(options = {}) {
-    this.companionBounds = options.companionBounds || null // {x, y, width, height}
+    this.companionBounds = options.companionBounds || null
   }
 
   setCompanionBounds(bounds) {
@@ -23,31 +23,33 @@ export class BuiltinActiveWindowCapturer {
 
   /**
    * 截取当前 Windows 前台窗口或主显示器画面
-   * @returns {Promise<{buffer: Buffer, mime: string, bounds?: object}>}
+   * @returns {Promise<{buffer: Buffer, mime: string, width: number, height: number}>}
    */
   async captureActiveWindow() {
     // 采用 Windows 原生 powershell + .NET GDI 进行轻量无依赖截屏
-    const script = `
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-[System.IntPtr]$hwnd = [System.IntPtr]::Zero
-try {
-  $type = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();' -Name 'Win32FGW' -Namespace 'DshPet' -PassThru
-  $hwnd = $type::GetForegroundWindow()
-} catch {}
+    const script = [
+      'Add-Type -AssemblyName System.Windows.Forms;',
+      'Add-Type -AssemblyName System.Drawing;',
+      '$screen = [System.Windows.Forms.Screen]::PrimaryScreen;',
+      '$rect = $screen.Bounds;',
+      '$bmp = New-Object System.Drawing.Bitmap $rect.Width, $rect.Height;',
+      '$g = [System.Drawing.Graphics]::FromImage($bmp);',
+      '$g.CopyFromScreen($rect.Location, [System.Drawing.Point]::Empty, $rect.Size);',
+      '$ms = New-Object System.IO.MemoryStream;',
+      '$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg);',
+      '$b64 = [System.Convert]::ToBase64String($ms.ToArray());',
+      '$g.Dispose();',
+      '$bmp.Dispose();',
+      '$ms.Dispose();',
+      'Write-Output $b64;'
+    ].join('\n')
 
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen
-$rect = $screen.Bounds
-$bmp = New-Object System.Drawing.Bitmap $rect.Width, $rect.Height
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($rect.Location, [System.Drawing.Point]::Empty, $rect.Size)
-$ms = New-Object System.IO.MemoryStream
-$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-[System.Convert]::ToBase64String($ms.ToArray())
-`
+    const encoded = Buffer.from(script, 'utf16le').toString('base64')
+
     try {
-      const { stdout } = await execAsync(`powershell -NoProfile -NonInteractive -Command "${script.replace(/\r?\n/g, ' ')}"`, {
-        maxBuffer: 15 * 1024 * 1024,
-        timeout: 4000,
+      const { stdout } = await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, {
+        maxBuffer: 25 * 1024 * 1024,
+        timeout: 6000,
       })
       const b64 = stdout.trim()
       if (!b64) throw new Error('截图数据为空')

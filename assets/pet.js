@@ -5061,6 +5061,14 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
     // 核心点击处理逻辑（由桌宠收到点击时委托调用）
     handlePoke(clientX, clientY, agentStatus) {
+      // 立即在用户手势事件中唤醒 Web Audio 上下文，杜绝静默一段时间后的无声或延迟
+      try {
+        ensureAudioPipeline()
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume().catch(() => {})
+        }
+      } catch (e) {}
+
       if (agentStatus !== 'idle') {
         closePanels()
         qBounce(1)
@@ -5915,6 +5923,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     const TABS = [
       ['character', '角色'],
       ['voice', '声音'],
+      ['perception', '🧩 感知与嘴巴'],
       ['click', '点击'],
       ['face', '表情'],
       ['decor', '装饰'],
@@ -6284,93 +6293,6 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         volVal.textContent = Math.round(val * 100) + '%'
       })
       volLabel.append(volRange, volVal)
-
-      // 1.5 伴侣声带模式与严禁隐式降级契约
-      const modeRow = $('div', 'dshp-row')
-      modeRow.style.display = 'flex'
-      modeRow.style.flexDirection = 'column'
-      modeRow.style.gap = '4px'
-      modeRow.style.marginTop = '6px'
-
-      const modeTitle = $('div', null, '伴侣声带模式')
-      modeTitle.style.fontSize = '12px'
-      modeTitle.style.fontWeight = 'bold'
-      modeTitle.style.color = '#7c5cff'
-
-      const modeSel = document.createElement('select')
-      modeSel.style.padding = '5px 8px'
-      modeSel.style.borderRadius = '6px'
-      modeSel.style.border = '1px solid var(--dshp-line)'
-      modeSel.style.background = 'rgba(0,0,0,0.15)'
-      modeSel.style.color = 'inherit'
-      modeSel.style.fontSize = '12px'
-
-      const optRephrase = document.createElement('option')
-      optRephrase.value = 'rephrase'
-      optRephrase.textContent = '🧠 AI 人设转述器（拟人个性 + Live2D 动作联动）'
-      const optTemplate = document.createElement('option')
-      optTemplate.value = 'template'
-      optTemplate.textContent = '📋 传统规则摘要（固定模板短语）'
-      const optOff = document.createElement('option')
-      optOff.value = 'off'
-      optOff.textContent = '🔇 关闭口播（仅保留气泡文字）'
-
-      modeSel.append(optRephrase, optTemplate, optOff)
-      modeSel.value = CFG.voiceMode || 'rephrase'
-      modeSel.addEventListener('change', () => {
-        CFG.voiceMode = modeSel.value
-        persistCfg()
-      })
-
-      const modeHint = $('div', 'dshp-hint', '💡 严禁隐式降级铁律：AI 模式下若大模型调用失败将保持静默，绝不在后台偷跑模板抢权。')
-      modeHint.style.fontSize = '10.5px'
-      modeHint.style.opacity = '0.75'
-      modeHint.style.lineHeight = '1.4'
-      modeRow.append(modeTitle, modeSel, modeHint)
-
-      // 1.8 系统级感知与伴聊设置
-      const perceptionGroup = $('div')
-      perceptionGroup.style.display = 'flex'
-      perceptionGroup.style.flexDirection = 'column'
-      perceptionGroup.style.gap = '6px'
-      perceptionGroup.style.marginTop = '8px'
-      perceptionGroup.style.padding = '8px'
-      perceptionGroup.style.background = 'rgba(0,0,0,0.1)'
-      perceptionGroup.style.borderRadius = '6px'
-
-      const pTitle = $('div', null, '🧩 系统级感知与伴聊')
-      pTitle.style.fontSize = '12px'
-      pTitle.style.fontWeight = 'bold'
-      pTitle.style.color = '#7c5cff'
-
-      const createToggle = (label, cfgKey, hintText) => {
-        const row = $('label')
-        row.style.display = 'flex'
-        row.style.alignItems = 'center'
-        row.style.gap = '6px'
-        row.style.fontSize = '11.5px'
-        row.style.cursor = 'pointer'
-
-        const chk = document.createElement('input')
-        chk.type = 'checkbox'
-        chk.checked = CFG[cfgKey] !== false
-        chk.addEventListener('change', () => {
-          CFG[cfgKey] = chk.checked
-          persistCfg()
-        })
-        const span = $('span', null, label)
-        row.append(chk, span)
-        if (hintText) row.title = hintText
-        return row
-      }
-
-      perceptionGroup.append(
-        pTitle,
-        createToggle('🎵 媒体听歌感知 (SMTC)', 'perceptionMedia', '感知当前播放的曲目信息'),
-        createToggle('🌐 网页场景关怀 (出行/租房/购物)', 'perceptionWeb', '识别到出行机票或房源时发起单次关怀问询，无视则自动静默'),
-        createToggle('🎮 游戏伴聊模式 (开启伴聊 / 关闭静默)', 'perceptionGame', '全屏游戏时生效：关闭则游戏期间全程静默，开启则在游戏空档期轻度互动'),
-        createToggle('👁️ 前台视觉感官 (开箱即用 + 兼容 appshot)', 'screenVision', '内置前台窗口精准截取与防自截，无缝协同 dsh-plugin-appshot'),
-      )
 
       // 2. 🎵 示例音色库卡片（本地音色池）
       const SAMPLE_VOICE_CONFIGS = {
@@ -7281,9 +7203,301 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
       localCard.append(localTitle, engineRow, refTextHint, refAudioInput, refTextInput, saveLocalBtn)
 
-      box.append(statusTitle, basicRow, volLabel, modeRow, perceptionGroup, poolCard, genCard, localCard)
+      box.append(statusTitle, basicRow, volLabel, poolCard, genCard, localCard)
       panes.appendChild(box)
       loadVoicePool()
+      return
+    }
+
+    if (id === 'perception') {
+      const pBox = $('div', 'dshp-col')
+      pBox.style.display = 'flex'
+      pBox.style.flexDirection = 'column'
+      pBox.style.gap = '12px'
+
+      const statusTitle = $('div', 'dshp-hint', '🧩 感知中枢与角色嘴巴 · 神经状态实时调控')
+      statusTitle.style.fontWeight = 'bold'
+      statusTitle.style.color = '#7c5cff'
+      statusTitle.style.fontSize = '13px'
+      pBox.appendChild(statusTitle)
+
+      // 1. 伴侣声带模式 (Mouth Mode) - 遵照指示不展示严禁隐式降级铁律文字声明
+      const mouthCard = $('div', 'dshp-card')
+      mouthCard.style.padding = '10px'
+      mouthCard.style.borderRadius = '8px'
+      mouthCard.style.background = 'rgba(0,0,0,0.14)'
+      mouthCard.style.border = '1px solid var(--dshp-line)'
+
+      const mouthTitle = $('div', null, '👄 伴侣声带表达模式')
+      mouthTitle.style.fontSize = '12px'
+      mouthTitle.style.fontWeight = 'bold'
+      mouthTitle.style.marginBottom = '6px'
+
+      const mouthSel = document.createElement('select')
+      mouthSel.style.width = '100%'
+      mouthSel.style.padding = '6px 8px'
+      mouthSel.style.borderRadius = '6px'
+      mouthSel.style.border = '1px solid var(--dshp-line)'
+      mouthSel.style.background = 'rgba(0,0,0,0.2)'
+      mouthSel.style.color = 'inherit'
+      mouthSel.style.fontSize = '12px'
+
+      const optRephrase = document.createElement('option')
+      optRephrase.value = 'rephrase'
+      optRephrase.textContent = '🧠 AI 人设转述器（5大角色专属灵魂人设 + Live2D 动作联动）'
+      const optTemplate = document.createElement('option')
+      optTemplate.value = 'template'
+      optTemplate.textContent = '📋 传统规则摘要（固定模板短语）'
+      const optOff = document.createElement('option')
+      optOff.value = 'off'
+      optOff.textContent = '🔇 关闭口播（仅保留气泡文字）'
+
+      mouthSel.append(optRephrase, optTemplate, optOff)
+      mouthSel.value = CFG.voiceMode || 'rephrase'
+      mouthSel.addEventListener('change', () => {
+        CFG.voiceMode = mouthSel.value
+        persistCfg()
+      })
+      mouthCard.append(mouthTitle, mouthSel)
+      pBox.appendChild(mouthCard)
+
+      // 2. 游戏伴聊感知 (Game Perception) - 只要游戏进程运行即生效，无需全屏
+      const gameCard = $('div', 'dshp-card')
+      gameCard.style.padding = '10px'
+      gameCard.style.borderRadius = '8px'
+      gameCard.style.background = 'rgba(0,0,0,0.14)'
+      gameCard.style.border = '1px solid var(--dshp-line)'
+
+      const gameTitle = $('div', null, '🎮 游戏进程伴聊感知')
+      gameTitle.style.fontSize = '12px'
+      gameTitle.style.fontWeight = 'bold'
+      gameTitle.style.marginBottom = '4px'
+
+      const gameStatusRow = $('div')
+      gameStatusRow.style.fontSize = '11px'
+      gameStatusRow.style.color = '#888'
+      gameStatusRow.style.marginBottom = '6px'
+      gameStatusRow.textContent = '正在检测本地游戏进程...'
+
+      const gameLabel = $('label')
+      gameLabel.style.display = 'flex'
+      gameLabel.style.alignItems = 'center'
+      gameLabel.style.gap = '6px'
+      gameLabel.style.fontSize = '12px'
+      gameLabel.style.cursor = 'pointer'
+
+      const gameChk = document.createElement('input')
+      gameChk.type = 'checkbox'
+      gameChk.checked = CFG.perceptionGame === true
+      gameChk.addEventListener('change', () => {
+        CFG.perceptionGame = gameChk.checked
+        persistCfg()
+        apiFetch(BASE + '/perception/game-event', {
+          method: 'POST',
+          body: JSON.stringify({ inGame: CFG.perceptionGame, gameName: 'manual_toggle' })
+        }).catch(() => {})
+      })
+      const gameSpan = $('span', null, '游戏开启时保持伴聊互动（关闭则游戏期间彻底静默）')
+      gameLabel.append(gameChk, gameSpan)
+
+      const gameHint = $('div', 'dshp-hint', '💡 已内置原神、星铁、绝区零、黑神话、CS2、瓦罗兰特、LOL等及主流 Steam 游戏。只要游戏进程打开即可生效，不限全屏。')
+      gameHint.style.fontSize = '10.5px'
+      gameHint.style.marginTop = '4px'
+      gameHint.style.opacity = '0.75'
+
+      gameCard.append(gameTitle, gameStatusRow, gameLabel, gameHint)
+      pBox.appendChild(gameCard)
+
+      // 3. 网页场景关怀 (Web Perception & Single Inquiry Protocol)
+      const webCard = $('div', 'dshp-card')
+      webCard.style.padding = '10px'
+      webCard.style.borderRadius = '8px'
+      webCard.style.background = 'rgba(0,0,0,0.14)'
+      webCard.style.border = '1px solid var(--dshp-line)'
+
+      const webTitle = $('div', null, '🌐 网页场景关怀（出行/租房/购物单次问候）')
+      webTitle.style.fontSize = '12px'
+      webTitle.style.fontWeight = 'bold'
+      webTitle.style.marginBottom = '6px'
+
+      const webLabel = $('label')
+      webLabel.style.display = 'flex'
+      webLabel.style.alignItems = 'center'
+      webLabel.style.gap = '6px'
+      webLabel.style.fontSize = '12px'
+      webLabel.style.cursor = 'pointer'
+
+      const webChk = document.createElement('input')
+      webChk.type = 'checkbox'
+      webChk.checked = CFG.perceptionWeb !== false
+      webChk.addEventListener('change', () => {
+        CFG.perceptionWeb = webChk.checked
+        persistCfg()
+      })
+      const webSpan = $('span', null, '启用网页场景智能关怀 (识别到机票出行、租房、购物车时主动轻声问候)')
+      webLabel.append(webChk, webSpan)
+
+      const webBtnRow = $('div')
+      webBtnRow.style.display = 'flex'
+      webBtnRow.style.gap = '8px'
+      webBtnRow.style.marginTop = '8px'
+
+      const testTravelBtn = $('button', 'dshp-chip', '⚡ 模拟测试出行问候')
+      testTravelBtn.style.fontSize = '11px'
+      testTravelBtn.style.padding = '4px 10px'
+      testTravelBtn.addEventListener('click', async () => {
+        try {
+          testTravelBtn.disabled = true
+          testTravelBtn.textContent = '触发中...'
+          await apiFetch(BASE + '/perception/test-inquiry', {
+            method: 'POST',
+            body: JSON.stringify({ category: 'travel' })
+          })
+          if (ui.bubble) ui.bubble.show('主人是在看去哪里的行程机票呀？', { name: activeCharInfo().name, duration: 6000 })
+        } catch (e) {
+          alert('测试触发异常: ' + e.message)
+        } finally {
+          testTravelBtn.disabled = false
+          testTravelBtn.textContent = '⚡ 模拟测试出行问候'
+        }
+      })
+
+      const testRentalBtn = $('button', 'dshp-chip', '⚡ 模拟测试租房问候')
+      testRentalBtn.style.fontSize = '11px'
+      testRentalBtn.style.padding = '4px 10px'
+      testRentalBtn.addEventListener('click', async () => {
+        try {
+          testRentalBtn.disabled = true
+          testRentalBtn.textContent = '触发中...'
+          await apiFetch(BASE + '/perception/test-inquiry', {
+            method: 'POST',
+            body: JSON.stringify({ category: 'rental' })
+          })
+          if (ui.bubble) ui.bubble.show('主人是在看新房源或者租房信息吗？', { name: activeCharInfo().name, duration: 6000 })
+        } catch (e) {
+          alert('测试触发异常: ' + e.message)
+        } finally {
+          testRentalBtn.disabled = false
+          testRentalBtn.textContent = '⚡ 模拟测试租房问候'
+        }
+      })
+
+      webBtnRow.append(testTravelBtn, testRentalBtn)
+      const webHint = $('div', 'dshp-hint', '🔒 遵循单次关怀铁律：仅问询一句，若 20 秒无视则自动彻底静默，绝不重复打扰。支持 Edge/Chrome 扩展安装联动。')
+      webHint.style.fontSize = '10.5px'
+      webHint.style.marginTop = '4px'
+      webHint.style.opacity = '0.75'
+
+      webCard.append(webTitle, webLabel, webBtnRow, webHint)
+      pBox.appendChild(webCard)
+
+      // 4. 前台视觉感官神经 (Screen Sensor)
+      const visionCard = $('div', 'dshp-card')
+      visionCard.style.padding = '10px'
+      visionCard.style.borderRadius = '8px'
+      visionCard.style.background = 'rgba(0,0,0,0.14)'
+      visionCard.style.border = '1px solid var(--dshp-line)'
+
+      const visionTitle = $('div', null, '👁️ 前台视觉感官神经 (开箱即用 + 动态多媒体抑制)')
+      visionTitle.style.fontSize = '12px'
+      visionTitle.style.fontWeight = 'bold'
+      visionTitle.style.marginBottom = '4px'
+
+      const visionStatus = $('div')
+      visionStatus.style.fontSize = '11px'
+      visionStatus.style.color = '#888'
+      visionStatus.style.marginBottom = '6px'
+      visionStatus.textContent = '视觉引擎状态探测中...'
+
+      const visionBtnRow = $('div')
+      visionBtnRow.style.display = 'flex'
+      visionBtnRow.style.alignItems = 'center'
+      visionBtnRow.style.gap = '8px'
+      visionBtnRow.style.marginTop = '6px'
+
+      const captureBtn = $('button', 'dshp-chip', '📸 立即截取前台活动窗口测试')
+      captureBtn.style.fontSize = '11px'
+      captureBtn.style.padding = '5px 12px'
+
+      const previewContainer = $('div')
+      previewContainer.style.marginTop = '8px'
+      previewContainer.style.display = 'none'
+
+      captureBtn.addEventListener('click', async () => {
+        try {
+          captureBtn.disabled = true
+          captureBtn.textContent = '正在捕获前台窗口...'
+          const res = await apiFetch(BASE + '/perception/capture', { method: 'POST', body: '{}' })
+          if (res && res.ok && res.shot && res.shot.base64) {
+            previewContainer.innerHTML = ''
+            previewContainer.style.display = 'flex'
+            previewContainer.style.flexDirection = 'column'
+            previewContainer.style.gap = '4px'
+
+            const info = $('div', null, `捕获成功 (${res.shot.source === 'appshot' ? 'dsh-plugin-appshot' : '内置原生 GDI'} · ${res.shot.width || 0}×${res.shot.height || 0})`)
+            info.style.fontSize = '11px'
+            info.style.color = '#10b981'
+
+            const img = document.createElement('img')
+            img.src = `data:${res.shot.mime || 'image/png'};base64,` + res.shot.base64
+            img.style.maxWidth = '100%'
+            img.style.maxHeight = '140px'
+            img.style.objectFit = 'contain'
+            img.style.borderRadius = '6px'
+            img.style.border = '1px solid var(--dshp-line)'
+
+            const askDshBtn = $('button', 'dshp-chip', '💬 发送给 DSH 讨论当前画面')
+            askDshBtn.style.fontSize = '11px'
+            askDshBtn.style.padding = '4px 8px'
+            askDshBtn.addEventListener('click', () => {
+              if (ui && ui.composer && ui.composer.inp) {
+                ui.composer.inp.value = '帮我看一下当前前台窗口的内容，并给出分析建议。'
+                openMenu('talk')
+              }
+            })
+
+            previewContainer.append(info, img, askDshBtn)
+          } else {
+            alert('截取完成，但未返回可预览图像数据')
+          }
+        } catch (e) {
+          alert('截取前台活动窗口失败: ' + e.message)
+        } finally {
+          captureBtn.disabled = false
+          captureBtn.textContent = '📸 立即截取前台活动窗口测试'
+        }
+      })
+
+      visionBtnRow.appendChild(captureBtn)
+      const visionHint = $('div', 'dshp-hint', '💡 伴侣只作为眼睛，绝不自建冗余本地视觉模型。内置 32×18 RGB 差分防抖与视频/游戏动态流抑制。')
+      visionHint.style.fontSize = '10.5px'
+      visionHint.style.marginTop = '4px'
+      visionHint.style.opacity = '0.75'
+
+      visionCard.append(visionTitle, visionStatus, visionBtnRow, previewContainer, visionHint)
+      pBox.appendChild(visionCard)
+
+      // 异步拉取后端状态
+      apiFetch(BASE + '/perception/status')
+        .then((res) => {
+          if (res && res.ok) {
+            const p = res.perception || {}
+            const s = res.screenSensor || {}
+            if (p.inGame) {
+              gameStatusRow.textContent = `🟢 正在运行游戏：${p.currentGame || '已识别游戏'}`
+              gameStatusRow.style.color = '#10b981'
+            } else {
+              gameStatusRow.textContent = '⚪ 未检测到运行中的游戏进程'
+            }
+
+            const sensorModeStr = s.mode === 'appshot_integrated' ? '🔗 联动 dsh-plugin-appshot' : '🟢 内置原生靶向捕获 (开箱即用)'
+            visionStatus.textContent = `${sensorModeStr} · 动态流抑制: ${s.isDynamicStream ? '活跃' : '休眠'}`
+            visionStatus.style.color = '#10b981'
+          }
+        })
+        .catch(() => {})
+
+      panes.appendChild(pBox)
       return
     }
 
@@ -9096,6 +9310,12 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             triggerActionByCue(m.actionCue)
           }
           playAudioWithLipSync(audioUrl)
+        }
+        break
+
+      case 'perception-inquiry':
+        if (m.text) {
+          ui.bubble.show(m.text, { name: activeCharInfo().name, sticky: false, duration: 6500 })
         }
         break
 
