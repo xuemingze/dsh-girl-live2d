@@ -586,20 +586,32 @@
     if (isClientDetached && !isStandalone) return
     const char = CHARACTERS[charId] || {}
     const charVoice = char.voice || {}
+    const payload = JSON.stringify({
+      text: text,
+      characterId: charId,
+      voice: charVoice.voice_name || charVoice.voice,
+      prompt: charVoice.prompt,
+      rate: charVoice.rate,
+      pitch: charVoice.pitch,
+    })
     try {
-      const resp = await fetch('http://127.0.0.1:9880/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: text,
-          characterId: charId,
-          voice: charVoice.voice_name || charVoice.voice,
-          prompt: charVoice.prompt,
-          rate: charVoice.rate,
-          pitch: charVoice.pitch,
-        }),
-      })
-      if (resp.ok) {
+      let resp = null
+      try {
+        resp = await fetch(BASE + '/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: payload,
+        })
+      } catch (e) {}
+      if (!resp || !resp.ok) {
+        resp = await fetch('http://127.0.0.1:9880/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        })
+      }
+      if (resp && resp.ok) {
         const ab = await resp.arrayBuffer()
         if (ab && ab.byteLength > 200) {
           await playAudioWithLipSync(ab, { force: true })
@@ -5887,16 +5899,79 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       basicRow.style.display = 'flex'
       basicRow.style.gap = '6px'
 
-      const soundBtn = $('button', 'dshp-btn' + (CFG.sound ? ' dshp-primary' : ''), CFG.sound ? '🔊 伴侣语音：开启' : '🔈 伴侣语音：静音')
+      const soundBtn = $('button', 'dshp-btn' + (CFG.sound ? ' dshp-primary' : ''), CFG.sound ? '🔊 伴侣语音：开启' : '🔈 伴侣语音：关闭')
       soundBtn.style.flex = '1'
       soundBtn.style.padding = '6px 10px'
       soundBtn.style.fontWeight = 'bold'
-      soundBtn.addEventListener('click', () => {
-        CFG.sound = !CFG.sound
-        persistCfg()
-        soundBtn.textContent = CFG.sound ? '🔊 伴侣语音：开启' : '🔈 伴侣语音：静音'
-        soundBtn.classList.toggle('dshp-primary', CFG.sound)
-        ui.bubble.show(CFG.sound ? '伴侣语音已开启，我会为你概括朗读哦~' : '伴侣语音已静音。', { sticky: false, duration: 2500 })
+
+      const syncSoundBtnUI = (isOn) => {
+        soundBtn.textContent = isOn ? '🔊 伴侣语音：开启' : '🔈 伴侣语音：关闭'
+        soundBtn.classList.toggle('dshp-primary', !!isOn)
+      }
+
+      // 打开面板时主动探测后端 TTS 服务真实运行状态并同步按钮
+      fetch(BASE + '/tts/status', { credentials: 'include' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((st) => {
+          if (st && typeof st.running === 'boolean') {
+            if (CFG.sound && !st.running) {
+              // 若配置为开启但服务未运行，自动拉起一次
+              fetch(BASE + '/tts/start', { method: 'POST', credentials: 'include' }).catch(() => {})
+            }
+          }
+        })
+        .catch(() => {})
+
+      soundBtn.addEventListener('click', async () => {
+        if (soundBtn.disabled) return
+        const targetOn = !CFG.sound
+        soundBtn.disabled = true
+        soundBtn.textContent = targetOn ? '⏳ 正在启动语音服务...' : '⏳ 正在关闭语音服务...'
+        try {
+          if (targetOn) {
+            let started = false
+            try {
+              const r = await fetch(BASE + '/tts/start', { method: 'POST', credentials: 'include' })
+              const d = r.ok ? await r.json().catch(() => ({})) : {}
+              started = !!(d && d.running)
+            } catch (e) {}
+            if (!started) {
+              try {
+                const ping = await fetch('http://127.0.0.1:9880/ping')
+                started = ping.ok
+              } catch (e) {}
+            }
+            CFG.sound = true
+            persistCfg()
+            syncSoundBtnUI(true)
+            ui.bubble.show(
+              started ? '伴侣语音服务已启动，我会为你朗读互动哦~' : '伴侣语音已开启（后台服务正在唤醒中）~',
+              { sticky: false, duration: 2500 },
+            )
+          } else {
+            CFG.sound = false
+            persistCfg()
+            if (activeTtsAudio) {
+              try {
+                activeTtsAudio.pause()
+                activeTtsAudio = null
+              } catch (e) {}
+              isSpeakingAudio = false
+              rig.talking = false
+            }
+            try {
+              await fetch(BASE + '/tts/stop', { method: 'POST', credentials: 'include' })
+            } catch (e) {
+              try {
+                await fetch('http://127.0.0.1:9880/shutdown', { method: 'POST' })
+              } catch (err) {}
+            }
+            syncSoundBtnUI(false)
+            ui.bubble.show('伴侣语音已关闭，TTS 后端服务已停止。', { sticky: false, duration: 2500 })
+          }
+        } finally {
+          soundBtn.disabled = false
+        }
       })
 
       const mouthBtn = $('button', 'dshp-btn' + (CFG.talkMouth ? ' dshp-primary' : ''), CFG.talkMouth ? '👄 口型同步：开启' : '👄 口型同步：关闭')
@@ -8427,55 +8502,6 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     row0.appendChild(resetAll)
     box.append(hostRow, hostHint, themeRow, row0)
 
-    // 🖥️ 活动空间模式：住进整个桌面（全屏透明漫步） vs 局限固定小窗 (560x900)
-    const spaceRow = $('div', 'dshp-row')
-    const spaceHint = $('div', 'dshp-hint', '')
-
-    const spaceBtns = [
-      [true, '🌟 住进桌面 (全屏活动)'],
-      [false, '🪟 局限小窗 (560×900)'],
-    ].map(([isFs, label]) => {
-      const b = $('button', 'dshp-btn', label)
-      b.addEventListener('click', () => {
-        for (const [, x] of spaceBtns) x.classList.remove('dshp-primary')
-        b.classList.add('dshp-primary')
-        CFG.fullscreenPrimary = isFs
-        saveLayout({ fullscreenPrimary: isFs })
-
-        if (window.dshpetBridge && typeof window.dshpetBridge.setFullscreenPrimary === 'function') {
-          window.dshpetBridge.setFullscreenPrimary(isFs)
-        }
-        if (shell.on) {
-          shell.post(isFs ? 'fullscreen:on' : 'fullscreen:off')
-        }
-        updateSpaceHint(isFs)
-        ui.bubble.show(
-          isFs
-            ? '已切换为「住进桌面」全屏模式！拥有超大自由漫步空间～'
-            : '已切换为「局限小窗」模式（560×900）～',
-          { name: activeCharInfo().name, ttl: 2600 },
-        )
-      })
-      return [isFs, b]
-    })
-
-    function updateSpaceHint(isFs) {
-      spaceHint.textContent = isFs
-        ? '当前：住进整个桌面 · 窗口铺满主屏幕，空白处完全透明穿透，漫步不受小窗限制'
-        : '当前：局限固定小窗 · 活动范围限制在 560×900 区域内'
-    }
-
-    const curFs = CFG.fullscreenPrimary !== false
-    for (const [isFs, b] of spaceBtns) b.classList.toggle('dshp-primary', isFs === curFs)
-    updateSpaceHint(curFs)
-    spaceRow.append(...spaceBtns.map(([, b]) => b))
-
-    window.__dshpSetFullscreenPrimary = (isFs) => {
-      CFG.fullscreenPrimary = !!isFs
-      for (const [val, b] of spaceBtns) b.classList.toggle('dshp-primary', val === !!isFs)
-      updateSpaceHint(!!isFs)
-    }
-
     // 🐾 桌面自由漫步与一键召回
     const roamRow = $('div', 'dshp-row')
     const roamBtn = $('button', 'dshp-btn', CFG.roamEnabled !== false ? '🐾 桌面漫步：开' : '🐾 桌面漫步：关')
@@ -8487,7 +8513,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         desktopRoamEngine.setRoaming(CFG.roamEnabled)
       }
       roamBtn.textContent = CFG.roamEnabled ? '🐾 桌面漫步：开' : '🐾 桌面漫步：关'
-      ui.bubble.show(CFG.roamEnabled ? '我可以自由溜达啦！' : '好，我乖乖待在原地～', { name: activeCharInfo().name, ttl: 2000 })
+      ui.bubble.show(CFG.roamEnabled ? '我可以自由溜达啦～' : '好，我乖乖待在原地～', { name: activeCharInfo().name, ttl: 2000 })
     })
 
     const recallBtn = $('button', 'dshp-btn', '📍 一键召回')
@@ -8499,7 +8525,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       }
     })
     roamRow.append(roamBtn, recallBtn)
-    box.append(spaceRow, spaceHint, roamRow)
+    box.append(roamRow)
 
     const row2 = $('div', 'dshp-row')
     const reset = $('button', 'dshp-btn', '回到角落')
@@ -8690,6 +8716,13 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       case 'voice-config-updated':
         if (m.characterId && m.voice && CHARACTERS[m.characterId]) {
           CHARACTERS[m.characterId].voice = Object.assign(CHARACTERS[m.characterId].voice || {}, m.voice)
+        }
+        break
+
+      case 'tts-state':
+        if (typeof m.enabled === 'boolean') {
+          CFG.sound = m.enabled
+          persistCfg()
         }
         break
 

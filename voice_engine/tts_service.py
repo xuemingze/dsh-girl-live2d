@@ -363,6 +363,8 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"status": "ok", "service": "dsh-girl-live2d TTS Service"}')
         elif clean_path in ("/desktop/status", "/dsh-pet/desktop/status"):
             self._send_json(200, get_desktop_status())
+        elif clean_path in ("/shutdown", "/tts/stop", "/dsh-pet/tts/stop"):
+            self._handle_shutdown()
         elif self.path.startswith(("/voices_pool/", "/dsh-pet/voices_pool/")):
             rel_part = self.path.split("/voices_pool/", 1)[-1].split("?")[0]
             from urllib.parse import unquote
@@ -441,6 +443,8 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
         elif clean_path in ("/desktop/close", "/dsh-pet/desktop/close"):
             res = close_desktop()
             self._send_json(200, res)
+        elif clean_path in ("/shutdown", "/tts/stop", "/dsh-pet/tts/stop"):
+            self._handle_shutdown()
         elif self.path.startswith("/tts"):
             self._handle_tts()
         elif self.path.startswith(("/generate_voice", "/generate-voice", "/dsh-pet/generate-voice")):
@@ -683,10 +687,61 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         logger.debug(format, *args)
 
+    def _handle_shutdown(self):
+        """优雅关闭 TTS 后端服务"""
+        try:
+            close_desktop()
+        except Exception:
+            pass
+        self._send_json(200, {"ok": True, "status": "shutting_down"})
+        import threading
+        def _stop():
+            import time
+            time.sleep(0.15)
+            try:
+                self.server.shutdown()
+            except Exception:
+                pass
+            os._exit(0)
+        threading.Thread(target=_stop, daemon=True).start()
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    server = ThreadingHTTPServer(("127.0.0.1", 9880), TTSServiceHandler)
+    import argparse, shutil, threading, time
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=9880)
+    parser.add_argument("--host-pid", type=int, default=0)
+    args, _ = parser.parse_known_args()
+
+    try:
+        os.makedirs(LOCAL_VOICES_POOL_DIR, exist_ok=True)
+        default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_samples")
+        if os.path.exists(default_dir):
+            for f in os.listdir(default_dir):
+                if f.lower().endswith(".wav"):
+                    src_p = os.path.join(default_dir, f)
+                    dst_p = os.path.join(LOCAL_VOICES_POOL_DIR, f)
+                    if not os.path.exists(dst_p):
+                        shutil.copy2(src_p, dst_p)
+    except Exception as e:
+        logger.warning(f"[TTS Service] 初始化默认音色样本异常: {e}")
+
+    if args.host_pid and args.host_pid > 0:
+        def _watch_host():
+            while True:
+                time.sleep(3.0)
+                if not _is_desktop_pid_running(args.host_pid):
+                    logger.info(f"[TTS Service] 检测到宿主进程 (PID={args.host_pid}) 已退出，自动关闭 TTS 后端服务")
+                    try:
+                        close_desktop()
+                    except Exception:
+                        pass
+                    os._exit(0)
+        threading.Thread(target=_watch_host, daemon=True).start()
+
+    ThreadingHTTPServer.allow_reuse_address = True
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), TTSServiceHandler)
     logger.info("[TTS Service] 9880 声带服务已就绪: http://127.0.0.1:9880/tts")
     try:
         server.serve_forever()

@@ -1,7 +1,7 @@
 /**
  * dsh-girl-live2d - voice_engine/tts_client.js
- * 
- * 负责向 9880 TTS 服务请求合成语音，具备服务离线自愈拉起机制，
+ *
+ * 负责向 9880 TTS 服务请求合成语音，具备服务离线自愈拉起、并发单飞等待与安全关闭机制，
  * 返回标准 PCM WAV 音频 buffer。
  */
 
@@ -14,6 +14,9 @@ import fs from 'node:fs'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const TTS_SCRIPT = path.join(HERE, 'tts_service.py')
 
+let ttsChild = null
+let spawnPromise = null
+
 export async function pingTTS(port = 9880) {
   return new Promise((resolve) => {
     const req = http.request(
@@ -22,9 +25,10 @@ export async function pingTTS(port = 9880) {
         port,
         path: '/ping',
         method: 'GET',
-        timeout: 1000,
+        timeout: 1200,
       },
       (res) => {
+        res.resume()
         resolve(res.statusCode === 200)
       },
     )
@@ -37,34 +41,105 @@ export async function pingTTS(port = 9880) {
   })
 }
 
-let isSpawning = false
 export async function ensureTTSServiceRunning(port = 9880) {
   const alive = await pingTTS(port)
   if (alive) return true
-  if (isSpawning) return false
-  isSpawning = true
-  try {
-    const pythonExe = fs.existsSync('C:\\Program Files\\Python312\\python.exe')
-      ? 'C:\\Program Files\\Python312\\python.exe'
-      : 'python'
-    const child = spawn(pythonExe, [TTS_SCRIPT], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    })
-    child.unref()
-    for (let i = 0; i < 15; i++) {
-      await new Promise((r) => setTimeout(r, 200))
-      if (await pingTTS(port)) {
-        isSpawning = false
-        return true
-      }
-    }
-  } catch (e) {
-    console.error('[TTS Client] Failed to auto-spawn tts_service.py:', e)
+
+  // 并发单飞：如果正在启动中，所有并发请求共享等待同一个启动 Promise，避免重装冷启动时直接返回 false 或重复拉起
+  if (spawnPromise) {
+    return spawnPromise
   }
-  isSpawning = false
-  return false
+
+  spawnPromise = (async () => {
+    try {
+      const candidates = [
+        'C:\\Program Files\\Python312\\python.exe',
+        'C:\\Program Files\\Python311\\python.exe',
+        'C:\\Program Files\\Python310\\python.exe',
+        'python',
+      ]
+      let pythonExe = 'python'
+      for (const c of candidates) {
+        if (c === 'python' || fs.existsSync(c)) {
+          pythonExe = c
+          break
+        }
+      }
+
+      const child = spawn(
+        pythonExe,
+        [TTS_SCRIPT, '--port', String(port), '--host-pid', String(process.pid)],
+        {
+          cwd: HERE,
+          stdio: 'ignore',
+          windowsHide: true,
+        },
+      )
+      ttsChild = child
+      child.on('exit', () => {
+        if (ttsChild === child) ttsChild = null
+      })
+      child.on('error', () => {
+        if (ttsChild === child) ttsChild = null
+      })
+
+      // 重装后首次冷启动（编译 pyc + 加载 soundfile/edge_tts/psutil）可能耗时 4~6 秒，预留最多 10 秒轮询
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 250))
+        if (await pingTTS(port)) {
+          return true
+        }
+      }
+    } catch (e) {
+      console.error('[TTS Client] Failed to auto-spawn tts_service.py:', e)
+    } finally {
+      spawnPromise = null
+    }
+    return false
+  })()
+
+  return spawnPromise
+}
+
+export async function stopTTSService(port = 9880) {
+  spawnPromise = null
+  // 1. 优先通过 HTTP /shutdown 通知 9880 进程优雅关闭（同时也会关闭其托管的子进程）
+  await new Promise((resolve) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: '/shutdown',
+        method: 'POST',
+        timeout: 1500,
+      },
+      (res) => {
+        res.resume()
+        resolve(true)
+      },
+    )
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+    req.end()
+  })
+
+  // 2. 若持有子进程句柄则兜底清理
+  if (ttsChild) {
+    try {
+      ttsChild.kill()
+    } catch (e) {}
+    ttsChild = null
+  }
+
+  // 3. 等待端口彻底释放
+  for (let i = 0; i < 10; i++) {
+    if (!(await pingTTS(port))) return true
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  return !(await pingTTS(port))
 }
 
 export function getSavedCharacterVoice(characterId) {
@@ -75,7 +150,10 @@ export function getSavedCharacterVoice(characterId) {
       const c = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
       if (c && c.voice) {
         const v = c.voice
-        const voiceName = v.voice_name || (typeof v.voice === 'string' ? v.voice : (v.voice && v.voice.voice_name)) || null
+        const voiceName =
+          v.voice_name ||
+          (typeof v.voice === 'string' ? v.voice : v.voice && v.voice.voice_name) ||
+          null
         return {
           voice: voiceName,
           rate: v.rate || (v.voice && v.voice.rate) || null,
@@ -113,6 +191,7 @@ export async function requestTTS(textOrOpts, characterId = 'whale', port = 9880)
   if (!alive) {
     alive = await ensureTTSServiceRunning(port)
   }
+  if (!alive) return null
 
   const payload = JSON.stringify(opts)
 
@@ -127,10 +206,11 @@ export async function requestTTS(textOrOpts, characterId = 'whale', port = 9880)
           'Content-Type': 'application/json; charset=utf-8',
           'Content-Length': Buffer.byteLength(payload),
         },
-        timeout: 8000,
+        timeout: 12000,
       },
       (res) => {
         if (res.statusCode !== 200) {
+          res.resume()
           resolve(null)
           return
         }
