@@ -4012,13 +4012,21 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 
     const dock = $('div', 'dshp-dock')
     const talkBtn = $('button', 'dshp-btn dshp-primary', '💬 说话')
+    // 主人要求：脚边只保留👀纯图标，点击即刻看屏幕
+    const lookBtn = $('button', 'dshp-btn dshp-icon', '👀')
+    lookBtn.title = '看看当前屏幕（快捷键 Alt+S）'
     const menuBtn = $('button', 'dshp-btn', '⋯')
     const hideBtn = $('button', 'dshp-btn', '–')
     hideBtn.title = '收起（桌面版会缩成贴边小球）'
     // 主人要的：一键打开 DeepSeek Harness，纯符号不写字
     const openBtn = $('button', 'dshp-btn dshp-icon', '↗')
     openBtn.title = '打开 DeepSeek Harness 界面'
-    dock.append(talkBtn, menuBtn, hideBtn, openBtn)
+    dock.append(talkBtn, lookBtn, menuBtn, hideBtn, openBtn)
+    dock.talkBtn = talkBtn
+    dock.lookBtn = lookBtn
+    dock.menuBtn = menuBtn
+    dock.hideBtn = hideBtn
+    dock.openBtn = openBtn
 
     const composer = $('div', 'dshp-panel dshp-composer')
     const ta = $('textarea')
@@ -6074,6 +6082,54 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     }
   }
 
+  let isLookingScreen = false
+  async function triggerLookScreen(source = 'dock') {
+    if (isLookingScreen) return
+    isLookingScreen = true
+    try {
+      const charName = (typeof activeCharInfo === 'function' && activeCharInfo() && activeCharInfo().name) ? activeCharInfo().name : '伴侣'
+      if (ui && ui.bubble) ui.bubble.show('让我想一想哦，正在看屏幕呢~', { name: charName, ttl: 4000 })
+      if (typeof act === 'function') act({ mood: 'listening', props: IDLE_PROPS, line: '让我想一想哦，正在看屏幕呢~', ms: 3000 })
+
+      const res = await perceptionFetch('/perception/capture', { method: 'POST', body: '{}' })
+      if (!res || !res.ok || !res.shot || !res.shot.base64) {
+        throw new Error('截屏画面获取失败')
+      }
+      const shot = res.shot
+      const targetTitle = (shot.title || '当前应用').trim()
+      const promptText = `请帮我看看当前前台应用【${targetTitle}】的屏幕画面，并根据画面内容给出贴心的分析或关怀提示。`
+      const sayRes = await apiFetch(BASE + '/say', {
+        method: 'POST',
+        body: JSON.stringify({
+          text: promptText,
+          userText: '👀 看看屏幕',
+          image: shot.base64,
+          imageMime: shot.mime || 'image/jpeg',
+          targetTitle: targetTitle,
+          mode: 'steer'
+        })
+      })
+      if (!sayRes || !sayRes.ok) {
+        throw new Error((sayRes && sayRes.error) || '发送失败')
+      }
+    } catch (err) {
+      console.warn('[triggerLookScreen] 截屏分析异常:', err)
+      const charName = (typeof activeCharInfo === 'function' && activeCharInfo() && activeCharInfo().name) ? activeCharInfo().name : '伴侣'
+      if (ui && ui.bubble) ui.bubble.show('刚才没能看清屏幕呢: ' + err.message, { name: charName, ttl: 3000 })
+    } finally {
+      setTimeout(() => { isLookingScreen = false }, 2000)
+    }
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.target && (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT')) return
+    const isAltS = e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 's' || e.key === 'S')
+    if (isAltS) {
+      e.preventDefault()
+      triggerLookScreen('hotkey')
+    }
+  })
+
   function bindMenu(u) {
     const TABS = [
       ['character', '角色'],
@@ -6100,22 +6156,29 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       u.menu.tabs.appendChild(b)
     }
     updateMenuTabLabels()
-    // 主人要求：说话按钮点一次开、再点一次关（以前再点只会重新打开，像关不掉）
-    u.dock.children[0].addEventListener('click', () => {
+    // 脚边 Dock 按钮事件绑定 (说话 / 👀看看屏幕 / ⋯菜单 / –收起 / ↗打开DSH)
+    const talkBtn = u.dock.talkBtn || u.dock.children[0]
+    const lookBtn = u.dock.lookBtn || u.dock.children[1]
+    const menuBtn = u.dock.menuBtn || u.dock.children[2]
+    const hideBtn = u.dock.hideBtn || u.dock.children[3]
+    const openBtn = u.dock.openBtn || u.dock.children[4]
+
+    talkBtn.addEventListener('click', () => {
       if (u.composer.el.classList.contains('dshp-on')) closePanels()
       else openMenu('talk')
     })
-    u.dock.children[1].addEventListener('click', () => {
+    lookBtn.addEventListener('click', () => {
+      triggerLookScreen('dock')
+    })
+    menuBtn.addEventListener('click', () => {
       if (u.menu.el.classList.contains('dshp-on')) closePanels()
       else openMenu('menu')
     })
-    u.dock.children[2].addEventListener('click', () => {
+    hideBtn.addEventListener('click', () => {
       closePanels()
       setHidden(true)
     })
-    // 第 4 个：打开 DeepSeek Harness。桌面壳里交给原生用默认浏览器打开，
-    // 浏览器版直接新开一个标签页。
-    u.dock.children[3].addEventListener('click', () => {
+    openBtn.addEventListener('click', () => {
       if (shell.on) shell.post('open-dsh')
       else window.open(BASE.replace(/\/dsh-pet$/, '') + '/', '_blank')
     })
@@ -7833,12 +7896,61 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       })
 
       visionBtnRow.appendChild(captureBtn)
+
+      // 5. 鼠标单击全局智能感知与默认发图设置
+      const mouseVisionRow = $('div')
+      mouseVisionRow.style.marginTop = '10px'
+      mouseVisionRow.style.paddingTop = '8px'
+      mouseVisionRow.style.borderTop = '1px dashed rgba(255,255,255,0.08)'
+
+      const mouseLabel = $('label')
+      mouseLabel.style.display = 'flex'
+      mouseLabel.style.alignItems = 'center'
+      mouseLabel.style.gap = '6px'
+      mouseLabel.style.fontSize = '12px'
+      mouseLabel.style.cursor = 'pointer'
+
+      const mouseChk = document.createElement('input')
+      mouseChk.type = 'checkbox'
+      mouseChk.checked = CFG.mouseClickVision !== false
+      mouseChk.addEventListener('change', () => {
+        CFG.mouseClickVision = mouseChk.checked
+        persistCfg()
+        perceptionFetch('/perception/mouse-vision-config', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: CFG.mouseClickVision })
+        }).catch(() => {})
+      })
+      const mouseSpan = $('span', null, '🖱️ 鼠标单击智能感知发图（全局单点生效，1秒防抖，默认发图）')
+      mouseLabel.append(mouseChk, mouseSpan)
+
+      const mouseHint = $('div', 'dshp-hint', '💡 全局鼠标单点触发（不限制浏览器，任意软件均生效）。单次点击后静默 1 秒自动抓取屏幕并发送给 DSH 关怀分析；双击或连续点击自动抛弃。')
+      mouseHint.style.fontSize = '10.5px'
+      mouseHint.style.marginTop = '4px'
+      mouseHint.style.opacity = '0.75'
+
+      const hotkeyRow = $('div')
+      hotkeyRow.style.display = 'flex'
+      hotkeyRow.style.alignItems = 'center'
+      hotkeyRow.style.justifyContent = 'space-between'
+      hotkeyRow.style.marginTop = '6px'
+      hotkeyRow.style.fontSize = '11px'
+      hotkeyRow.style.color = '#ccc'
+
+      const hotkeyTitle = $('span', null, '⌨️ 一键看屏幕快捷键（脚边👀图标同等效果）：')
+      const hotkeyBadge = $('span', 'dshp-chip', 'Alt + S')
+      hotkeyBadge.style.fontSize = '11px'
+      hotkeyBadge.style.padding = '2px 8px'
+      hotkeyRow.append(hotkeyTitle, hotkeyBadge)
+
+      mouseVisionRow.append(mouseLabel, mouseHint, hotkeyRow)
+
       const visionHint = $('div', 'dshp-hint', '💡 伴侣只作为眼睛，绝不自建冗余本地视觉模型。内置 32×18 RGB 差分防抖、动态流抑制与 WinSta0\\Default 原生极速采集。')
       visionHint.style.fontSize = '10.5px'
       visionHint.style.marginTop = '4px'
       visionHint.style.opacity = '0.75'
 
-      visionCard.append(visionTitle, visionToggleRow, visionStatus, visionBtnRow, previewContainer, visionHint)
+      visionCard.append(visionTitle, visionToggleRow, visionStatus, visionBtnRow, previewContainer, mouseVisionRow, visionHint)
       pBox.appendChild(visionCard)
 
       // 异步拉取后端状态
@@ -10323,6 +10435,50 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         if (!trans.id || trans.id === lastHandledTransId) return
         lastHandledTransId = trans.id
 
+        // 0. 鼠标单击全局感知（单点静默 1s，双击连击抛弃，默认自动发图至 DSH）
+        if (trans.trigger === 'mouse_click') {
+          if (CFG.mouseClickVision !== false && trans.shot && trans.shot.base64) {
+            console.log(`[MouseVision] 鼠标单击触发，默认自动发图至 DSH: ${trans.title}`)
+            const charName = (typeof activeCharInfo === 'function' && activeCharInfo() && activeCharInfo().name) ? activeCharInfo().name : '伴侣'
+            if (ui.bubble) ui.bubble.show('我注意到主人刚点的画面啦，正在帮你看~', { name: charName, ttl: 4000 })
+            if (typeof act === 'function') act({ mood: 'listening', props: IDLE_PROPS, ms: 3000 })
+            apiFetch(BASE + '/say', {
+              method: 'POST',
+              body: JSON.stringify({
+                text: `主人刚刚在前台应用【${trans.title || '当前应用'}】进行了点击。请根据当前屏幕画面内容，简要给出一两句贴心的分析、提示或关怀。`,
+                userText: '🖱️ [点击感知] 看看屏幕',
+                image: trans.shot.base64,
+                imageMime: trans.shot.mime || 'image/jpeg',
+                targetTitle: trans.title || '当前应用',
+                mode: 'steer'
+              })
+            }).catch(err => console.warn('[MouseVision] 自动发图异常:', err))
+          }
+          return
+        }
+
+        // 0.1 全局快捷键 Alt+S 触发自动发图
+        if (trans.trigger === 'hotkey') {
+          if (trans.shot && trans.shot.base64) {
+            console.log(`[HotkeyVision] 全局热键 Alt+S 触发发图至 DSH: ${trans.title}`)
+            const charName = (typeof activeCharInfo === 'function' && activeCharInfo() && activeCharInfo().name) ? activeCharInfo().name : '伴侣'
+            if (ui.bubble) ui.bubble.show('收到快捷键啦，正在帮主人看屏幕~', { name: charName, ttl: 4000 })
+            if (typeof act === 'function') act({ mood: 'listening', props: IDLE_PROPS, ms: 3000 })
+            apiFetch(BASE + '/say', {
+              method: 'POST',
+              body: JSON.stringify({
+                text: `请帮我看看当前前台应用【${trans.title || '当前应用'}】的画面内容，并给出你的分析或关怀建议。`,
+                userText: '👀 [快捷键] 看看屏幕',
+                image: trans.shot.base64,
+                imageMime: trans.shot.mime || 'image/jpeg',
+                targetTitle: trans.title || '当前应用',
+                mode: 'steer'
+              })
+            }).catch(err => console.warn('[HotkeyVision] 快捷键发图异常:', err))
+          }
+          return
+        }
+
         const title = (trans.title || '').toLowerCase()
         const pname = (trans.process || '').toLowerCase()
 
@@ -10389,6 +10545,12 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           body: JSON.stringify({
             enabled: CFG.screenVisionEnabled !== false,
             mode: CFG.screenVisionMode || 'companion'
+          })
+        }).catch(() => {})
+        perceptionFetch('/perception/mouse-vision-config', {
+          method: 'POST',
+          body: JSON.stringify({
+            enabled: CFG.mouseClickVision !== false
           })
         }).catch(() => {})
       } catch (e) {}
