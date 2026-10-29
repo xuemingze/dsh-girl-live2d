@@ -302,6 +302,65 @@
   }
 
   /**
+   * 感知与视觉子系统弹性请求客户端 (perceptionFetch)
+   * 双回路设计：
+   * 1. 优先尝试主服务路由 (BASE + '/perception/...')
+   * 2. 若遇 HTTP 405/404 或主服务尚未启动感知路由，无缝降级直连 9880 伴随服务端口
+   */
+  async function perceptionFetch(endpoint, opt = {}) {
+    const relPath = endpoint.startsWith('/') ? endpoint : '/' + endpoint
+    const primaryUrl = BASE + relPath
+    let dshError = null
+
+    // 1. 优先走主应用路由
+    try {
+      const headers = Object.assign({}, opt.headers || {})
+      if (opt.body && !headers['Content-Type'] && typeof opt.body === 'string') {
+        headers['Content-Type'] = 'application/json'
+      }
+      if (DESK_TOKEN) headers['x-dsh-pet-desk'] = DESK_TOKEN
+      const res = await fetch(primaryUrl, Object.assign({}, opt, {
+        headers,
+        credentials: 'include',
+      }))
+      if (res.status !== 404 && res.status !== 405) {
+        const raw = await res.text()
+        let data = null
+        try { data = JSON.parse(raw) } catch (e) {}
+        if (!res.ok) {
+          throw new Error((data && data.error) || ('HTTP ' + res.status + (raw && raw.length < 80 ? ': ' + raw : '')))
+        }
+        return data || { ok: true }
+      }
+      dshError = new Error('HTTP ' + res.status)
+    } catch (err) {
+      dshError = err
+    }
+
+    // 2. 遇 405/404/网络异常，无缝降级直连 9880 伴随服务独立端口
+    const fallbackUrl = 'http://127.0.0.1:9880' + relPath
+    try {
+      const fbHeaders = Object.assign({}, opt.headers || {})
+      if (opt.body && !fbHeaders['Content-Type'] && typeof opt.body === 'string') {
+        fbHeaders['Content-Type'] = 'application/json'
+      }
+      const fbRes = await fetch(fallbackUrl, Object.assign({}, opt, {
+        headers: fbHeaders,
+        mode: 'cors',
+      }))
+      const fbRaw = await fbRes.text()
+      let fbData = null
+      try { fbData = JSON.parse(fbRaw) } catch (e) {}
+      if (!fbRes.ok) {
+        throw new Error((fbData && fbData.error) || ('HTTP ' + fbRes.status + (fbRaw && fbRaw.length < 80 ? ': ' + fbRaw : '')))
+      }
+      return fbData || { ok: true }
+    } catch (fbErr) {
+      throw new Error(`感知请求失败 (主服务: ${dshError ? dshError.message : '无响应'}, 9880备用: ${fbErr.message})`)
+    }
+  }
+
+  /**
    * 设置持久化：把 CFG 里可序列化的值随 layout 一起存本地。
    * 主人要求：「每次设置保存，哪怕关掉以后下次还是这样」。
    */
@@ -5923,7 +5982,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     const TABS = [
       ['character', '角色'],
       ['voice', '声音'],
-      ['perception', '🧩 感知与嘴巴'],
+      ['perception', '感知'],
       ['click', '点击'],
       ['face', '表情'],
       ['decor', '装饰'],
@@ -7215,7 +7274,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       pBox.style.flexDirection = 'column'
       pBox.style.gap = '12px'
 
-      const statusTitle = $('div', 'dshp-hint', '🧩 感知中枢与角色嘴巴 · 神经状态实时调控')
+      const statusTitle = $('div', 'dshp-hint', '🧩 场景感知与角色状态调控')
       statusTitle.style.fontWeight = 'bold'
       statusTitle.style.color = '#7c5cff'
       statusTitle.style.fontSize = '13px'
@@ -7292,7 +7351,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       gameChk.addEventListener('change', () => {
         CFG.perceptionGame = gameChk.checked
         persistCfg()
-        apiFetch(BASE + '/perception/game-event', {
+        perceptionFetch('/perception/game-event', {
           method: 'POST',
           body: JSON.stringify({ inGame: CFG.perceptionGame, gameName: 'manual_toggle' })
         }).catch(() => {})
@@ -7349,11 +7408,17 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         try {
           testTravelBtn.disabled = true
           testTravelBtn.textContent = '触发中...'
-          await apiFetch(BASE + '/perception/test-inquiry', {
+          const res = await perceptionFetch('/perception/test-inquiry', {
             method: 'POST',
             body: JSON.stringify({ category: 'travel' })
           })
-          if (ui.bubble) ui.bubble.show('主人是在看去哪里的行程机票呀？', { name: activeCharInfo().name, duration: 6000 })
+          const qText = (res && res.result && res.result.questionText) || '主人是在看去哪里的行程机票呀？'
+          if (ui.bubble) ui.bubble.show(qText, { name: activeCharInfo().name, duration: 6000 })
+          try {
+            if (CFG.voiceEngine !== 'none' && typeof playSpeech === 'function') {
+              playSpeech(qText)
+            }
+          } catch (ve) {}
         } catch (e) {
           alert('测试触发异常: ' + e.message)
         } finally {
@@ -7369,11 +7434,17 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         try {
           testRentalBtn.disabled = true
           testRentalBtn.textContent = '触发中...'
-          await apiFetch(BASE + '/perception/test-inquiry', {
+          const res = await perceptionFetch('/perception/test-inquiry', {
             method: 'POST',
             body: JSON.stringify({ category: 'rental' })
           })
-          if (ui.bubble) ui.bubble.show('主人是在看新房源或者租房信息吗？', { name: activeCharInfo().name, duration: 6000 })
+          const qText = (res && res.result && res.result.questionText) || '主人是在看新房源或者租房信息吗？'
+          if (ui.bubble) ui.bubble.show(qText, { name: activeCharInfo().name, duration: 6000 })
+          try {
+            if (CFG.voiceEngine !== 'none' && typeof playSpeech === 'function') {
+              playSpeech(qText)
+            }
+          } catch (ve) {}
         } catch (e) {
           alert('测试触发异常: ' + e.message)
         } finally {
@@ -7427,7 +7498,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         try {
           captureBtn.disabled = true
           captureBtn.textContent = '正在捕获前台窗口...'
-          const res = await apiFetch(BASE + '/perception/capture', { method: 'POST', body: '{}' })
+          const res = await perceptionFetch('/perception/capture', { method: 'POST', body: '{}' })
           if (res && res.ok && res.shot && res.shot.base64) {
             previewContainer.innerHTML = ''
             previewContainer.style.display = 'flex'
@@ -7439,7 +7510,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             info.style.color = '#10b981'
 
             const img = document.createElement('img')
-            img.src = `data:${res.shot.mime || 'image/png'};base64,` + res.shot.base64
+            img.src = `data:${res.shot.mime || 'image/jpeg'};base64,` + res.shot.base64
             img.style.maxWidth = '100%'
             img.style.maxHeight = '140px'
             img.style.objectFit = 'contain'
@@ -7478,7 +7549,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       pBox.appendChild(visionCard)
 
       // 异步拉取后端状态
-      apiFetch(BASE + '/perception/status')
+      perceptionFetch('/perception/status')
         .then((res) => {
           if (res && res.ok) {
             const p = res.perception || {}

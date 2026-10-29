@@ -10,6 +10,7 @@ import asyncio
 import re
 import sys
 import subprocess
+import base64
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional
@@ -347,6 +348,82 @@ async def _synthesize_edge_tts_to_wav(
     return wav_io.getvalue()
 
 
+# ============================================================================
+# 场景感知总线与视觉感官辅助 (Perception & Screen Sensor Helpers)
+# ============================================================================
+KNOWN_GAMES_DICT = {
+    "genshinimpact.exe": "原神",
+    "yuanshen.exe": "原神",
+    "starrail.exe": "崩坏：星穹铁道",
+    "zenlesszonezero.exe": "绝区零",
+    "b1.exe": "黑神话：悟空",
+    "b1-win64-shipping.exe": "黑神话：悟空",
+    "cs2.exe": "反恐精英 2 (CS2)",
+    "valorant.exe": "无畏契约 (VALORANT)",
+    "leagueclientux.exe": "英雄联盟",
+    "league of legends.exe": "英雄联盟",
+    "dota2.exe": "Dota 2",
+    "minecraft.windows.exe": "我的世界",
+    "javaw.exe": "Minecraft / Java",
+    "steam.exe": "Steam",
+}
+
+def scan_game_processes():
+    try:
+        cmd = ["tasklist", "/fo", "csv", "/nh"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+        found_steam = False
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [p.strip(' "') for p in line.split('","')]
+            if parts:
+                pname = parts[0].lower()
+                if pname in KNOWN_GAMES_DICT:
+                    if pname == "steam.exe":
+                        found_steam = True
+                    else:
+                        return True, KNOWN_GAMES_DICT[pname]
+        if found_steam:
+            return True, "Steam"
+        return False, None
+    except Exception as e:
+        logger.warning(f"Error scanning game processes: {e}")
+        return False, None
+
+def capture_screen_base64():
+    script = (
+        'Add-Type -AssemblyName System.Windows.Forms;\n'
+        'Add-Type -AssemblyName System.Drawing;\n'
+        '$screen = [System.Windows.Forms.Screen]::PrimaryScreen;\n'
+        '$rect = $screen.Bounds;\n'
+        '$bmp = New-Object System.Drawing.Bitmap $rect.Width, $rect.Height;\n'
+        '$g = [System.Drawing.Graphics]::FromImage($bmp);\n'
+        '$g.CopyFromScreen($rect.Location, [System.Drawing.Point]::Empty, $rect.Size);\n'
+        '$ms = New-Object System.IO.MemoryStream;\n'
+        '$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg);\n'
+        '$b64 = [System.Convert]::ToBase64String($ms.ToArray());\n'
+        '$g.Dispose();\n'
+        '$bmp.Dispose();\n'
+        '$ms.Dispose();\n'
+        'Write-Output "$($rect.Width),$($rect.Height)|$b64"\n'
+    )
+    enc = base64.b64encode(script.encode('utf-16le')).decode('ascii')
+    r = subprocess.run(
+        ['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', enc],
+        capture_output=True,
+        text=True,
+        timeout=8
+    )
+    out = r.stdout.strip()
+    if "|" in out:
+        meta, b64 = out.split("|", 1)
+        w, h = [int(x) for x in meta.split(",")]
+        return b64, w, h
+    raise RuntimeError(f"PowerShell capture failed: {r.stderr or out}")
+
+
 class TTSServiceHandler(BaseHTTPRequestHandler):
     def _send_cors(self):
         origin = self.headers.get("Origin") or "*"
@@ -457,6 +534,15 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             audio_base64 = qs.get("audioBase64", [""])[0]
             self._save_to_pool_bytes(name=name, audio_base64=audio_base64)
             return
+        elif clean_path in ("/perception/status", "/dsh-pet/perception/status"):
+            self._handle_perception_status()
+            return
+        elif clean_path in ("/perception/capture", "/dsh-pet/perception/capture"):
+            self._handle_perception_capture()
+            return
+        elif clean_path in ("/perception/test-inquiry", "/dsh-pet/perception/test-inquiry"):
+            self._handle_perception_test_inquiry()
+            return
         else:
             self._send_error_json(404, f"Not Found: {self.path}")
 
@@ -494,8 +580,88 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self._save_to_pool_bytes(name=payload.get("name", ""), audio_base64=payload.get("audioBase64", ""))
         elif self.path.startswith(("/delete-pool-voice", "/delete_voice", "/dsh-pet/delete-pool-voice")):
             self._handle_delete_voice()
+        elif clean_path in ("/perception/status", "/dsh-pet/perception/status"):
+            self._handle_perception_status()
+            return
+        elif clean_path in ("/perception/capture", "/dsh-pet/perception/capture"):
+            self._handle_perception_capture()
+            return
+        elif clean_path in ("/perception/test-inquiry", "/dsh-pet/perception/test-inquiry"):
+            self._handle_perception_test_inquiry()
+            return
+        elif clean_path in (
+            "/perception/web-event", "/dsh-pet/perception/web-event",
+            "/perception/game-event", "/dsh-pet/perception/game-event",
+            "/perception/media-event", "/dsh-pet/perception/media-event",
+            "/perception/window-event", "/dsh-pet/perception/window-event"
+        ):
+            self._send_json(200, {"ok": True})
+            return
         else:
             self._send_error_json(404, f"Not Found: {self.path}")
+
+    def _handle_perception_status(self):
+        in_game, current_game = scan_game_processes()
+        data = {
+            "ok": True,
+            "perception": {
+                "inGame": in_game,
+                "currentGame": current_game,
+                "media": None,
+                "foregroundWindow": None,
+            },
+            "screenSensor": {
+                "enabled": True,
+                "mode": "builtin_standalone",
+                "appshotInstalled": False,
+                "isDynamicStream": False,
+            }
+        }
+        self._send_json(200, data)
+
+    def _handle_perception_capture(self):
+        try:
+            b64, w, h = capture_screen_base64()
+            res = {
+                "ok": True,
+                "shot": {
+                    "source": "builtin",
+                    "mime": "image/jpeg",
+                    "width": w,
+                    "height": h,
+                    "base64": b64,
+                    "capturedAt": int(time.time() * 1000)
+                }
+            }
+            self._send_json(200, res)
+        except Exception as e:
+            logger.error(f"[Perception] Screen capture error: {e}")
+            self._send_error_json(500, f"屏幕捕获异常: {e}")
+
+    def _handle_perception_test_inquiry(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:
+            payload = {}
+        cat = payload.get("category", "travel")
+        questions = {
+            "travel": "主人是在看去哪里的行程机票呀？需要我帮忙留心天气吗？",
+            "rental": "主人是在看新房源或者租房信息吗？要注意周边通勤和安全呀~",
+            "shopping": "主人是在挑选什么心仪的好物吗？要不要我帮你对比看看？",
+        }
+        q = questions.get(cat, questions["travel"])
+        res = {
+            "ok": True,
+            "result": {
+                "ok": True,
+                "category": cat,
+                "questionText": q,
+                "triggeredAt": int(time.time() * 1000)
+            }
+        }
+        self._send_json(200, res)
 
     def _handle_init_default_samples(self):
         default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_samples")
