@@ -12,7 +12,7 @@
 [**🇨🇳 中文文档**](#-功能特性) • [**🇬🇧 English (In-Page)**](#-english-documentation) • [**🇬🇧 README_EN.md**](./README_EN.md) • [**📦 Release Notes**](./CHANGELOG.md)
 
 </div>
-<img width="1280" height="820" alt="live2d" src="https://github.com/user-attachments/assets/6a792100-1719-41e0-abdb-a7ac88740873" />
+<img width="989" height="817" alt="live2d" src="https://github.com/user-attachments/assets/6e59c3df-8462-4abf-bf71-4651619e1770" />
 
 ---
 
