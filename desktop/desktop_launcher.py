@@ -115,6 +115,35 @@ class PetWebPage(QWebEnginePage):
     def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
         print(f"[JS] {sourceID}:{lineNumber} -> {message}")
 
+    def javaScriptConfirm(self, securityOrigin, msg):
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            mb = QMessageBox(QMessageBox.Icon.Question, "确认操作", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self.view())
+            mb.setStyleSheet(
+                "QMessageBox { background-color: #1e1e24; color: #ffffff; font-family: 'Segoe UI', system-ui; }"
+                "QLabel { color: #ffffff; font-size: 13px; font-weight: normal; }"
+                "QPushButton { background-color: #3b3b44; color: #ffffff; padding: 6px 16px; border-radius: 4px; font-size: 12px; }"
+                "QPushButton:hover { background-color: #4f4f5c; }"
+            )
+            return mb.exec() == QMessageBox.StandardButton.Yes
+        except Exception as e:
+            print(f"[launcher] javaScriptConfirm fallback error: {e}")
+            return True
+
+    def javaScriptAlert(self, securityOrigin, msg):
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            mb = QMessageBox(QMessageBox.Icon.Information, "系统提示", msg, QMessageBox.StandardButton.Ok, self.view())
+            mb.setStyleSheet(
+                "QMessageBox { background-color: #1e1e24; color: #ffffff; font-family: 'Segoe UI', system-ui; }"
+                "QLabel { color: #ffffff; font-size: 13px; font-weight: normal; }"
+                "QPushButton { background-color: #3b3b44; color: #ffffff; padding: 6px 16px; border-radius: 4px; font-size: 12px; }"
+                "QPushButton:hover { background-color: #4f4f5c; }"
+            )
+            mb.exec()
+        except Exception as e:
+            print(f"[launcher] javaScriptAlert fallback error: {e}")
+
 
 class DesktopPetWindow(QWebEngineView):
     def __init__(self, port: int, token: str, host_pid: int = 0):

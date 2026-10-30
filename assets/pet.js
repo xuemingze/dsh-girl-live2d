@@ -6259,6 +6259,92 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         })
         itemWrap.appendChild(b)
 
+  function showInPageConfirm({ title = '确认操作', content = '', confirmText = '确定', cancelText = '取消', onConfirm = null }) {
+    const existing = document.getElementById('dshp-inpage-confirm')
+    if (existing) existing.remove()
+
+    const mask = document.createElement('div')
+    mask.id = 'dshp-inpage-confirm'
+    mask.style.position = 'fixed'
+    mask.style.left = '0'
+    mask.style.top = '0'
+    mask.style.width = '100vw'
+    mask.style.height = '100vh'
+    mask.style.background = 'rgba(0, 0, 0, 0.65)'
+    mask.style.backdropFilter = 'blur(4px)'
+    mask.style.display = 'flex'
+    mask.style.alignItems = 'center'
+    mask.style.justifyContent = 'center'
+    mask.style.zIndex = '999999'
+
+    const card = document.createElement('div')
+    card.style.background = '#1e1e24'
+    card.style.border = '1px solid rgba(255, 255, 255, 0.15)'
+    card.style.borderRadius = '12px'
+    card.style.padding = '18px 22px'
+    card.style.maxWidth = '320px'
+    card.style.width = '85%'
+    card.style.boxShadow = '0 12px 36px rgba(0,0,0,0.6)'
+    card.style.color = '#ffffff'
+    card.style.fontFamily = 'system-ui, -apple-system, sans-serif'
+    card.style.textAlign = 'center'
+
+    const titleEl = document.createElement('div')
+    titleEl.textContent = title
+    titleEl.style.fontSize = '15px'
+    titleEl.style.fontWeight = '600'
+    titleEl.style.marginBottom = '10px'
+    titleEl.style.color = '#ff6b6b'
+    card.appendChild(titleEl)
+
+    const msgEl = document.createElement('div')
+    msgEl.textContent = content
+    msgEl.style.fontSize = '13px'
+    msgEl.style.lineHeight = '1.5'
+    msgEl.style.color = 'rgba(255, 255, 255, 0.85)'
+    msgEl.style.marginBottom = '18px'
+    card.appendChild(msgEl)
+
+    const btnRow = document.createElement('div')
+    btnRow.style.display = 'flex'
+    btnRow.style.gap = '12px'
+    btnRow.style.justifyContent = 'center'
+
+    const cancelBtn = document.createElement('button')
+    cancelBtn.textContent = cancelText
+    cancelBtn.style.flex = '1'
+    cancelBtn.style.padding = '8px 12px'
+    cancelBtn.style.borderRadius = '6px'
+    cancelBtn.style.border = '1px solid rgba(255, 255, 255, 0.2)'
+    cancelBtn.style.background = 'rgba(255, 255, 255, 0.08)'
+    cancelBtn.style.color = '#ffffff'
+    cancelBtn.style.cursor = 'pointer'
+    cancelBtn.style.fontSize = '13px'
+    cancelBtn.onclick = () => mask.remove()
+    btnRow.appendChild(cancelBtn)
+
+    const okBtn = document.createElement('button')
+    okBtn.textContent = confirmText
+    okBtn.style.flex = '1'
+    okBtn.style.padding = '8px 12px'
+    okBtn.style.borderRadius = '6px'
+    okBtn.style.border = 'none'
+    okBtn.style.background = '#ff4d4f'
+    okBtn.style.color = '#ffffff'
+    okBtn.style.cursor = 'pointer'
+    okBtn.style.fontSize = '13px'
+    okBtn.style.fontWeight = '600'
+    okBtn.onclick = () => {
+      mask.remove()
+      if (typeof onConfirm === 'function') onConfirm()
+    }
+    btnRow.appendChild(okBtn)
+
+    card.appendChild(btnRow)
+    mask.appendChild(card)
+    document.body.appendChild(mask)
+  }
+
         // 自定义导入角色支持删除
         if (!builtins.includes(key)) {
           const delBtn = $('button', 'dshp-btn', '🗑️')
@@ -6271,33 +6357,40 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           delBtn.style.color = '#ff4d4f'
           delBtn.style.cursor = 'pointer'
           delBtn.title = `彻底删除伴侣「${char.name}」`
-          delBtn.addEventListener('click', async (ev) => {
+          delBtn.addEventListener('click', (ev) => {
             ev.stopPropagation()
-            if (!confirm(`确定要彻底删除伴侣「${char.name}」吗？\n（将从伴侣库及磁盘中安全移除）`)) return
-            delBtn.disabled = true
-            delBtn.textContent = '⏳'
-            try {
-              const res = await apiFetch(BASE + '/delete-character', {
-                method: 'POST',
-                body: JSON.stringify({ characterId: key }),
-              })
-              if (!res.ok) {
-                alert('删除失败: ' + (res.error || '未知错误'))
-                delBtn.disabled = false
-                delBtn.textContent = '🗑️'
-                return
-              }
-              delete CHARACTERS[key]
-              if (activeCharacterId === key) {
-                await switchCharacter('tutu')
-              }
-              renderPane('character')
-              ui.bubble.show(`伴侣「${char.name}」已安全删除~`, { duration: 3000 })
-            } catch (err) {
-              alert('删除异常: ' + ((err && err.message) || err))
-              delBtn.disabled = false
-              delBtn.textContent = '🗑️'
-            }
+            showInPageConfirm({
+              title: '彻底删除伴侣',
+              content: `确定要彻底删除伴侣「${char.name}」吗？\n（将从伴侣库及磁盘中安全移除）`,
+              confirmText: '确认删除',
+              cancelText: '取消',
+              onConfirm: async () => {
+                delBtn.disabled = true
+                delBtn.textContent = '⏳'
+                try {
+                  const res = await apiFetch(BASE + '/delete-character', {
+                    method: 'POST',
+                    body: JSON.stringify({ characterId: key }),
+                  })
+                  if (!res.ok) {
+                    if (ui && ui.bubble) ui.bubble.show('删除失败: ' + (res.error || '未知错误'), { duration: 3000 })
+                    delBtn.disabled = false
+                    delBtn.textContent = '🗑️'
+                    return
+                  }
+                  delete CHARACTERS[key]
+                  if (activeCharacterId === key) {
+                    await switchCharacter('tutu')
+                  }
+                  renderPane('character')
+                  if (ui && ui.bubble) ui.bubble.show(`伴侣「${char.name}」已安全删除~`, { duration: 3000 })
+                } catch (err) {
+                  if (ui && ui.bubble) ui.bubble.show('删除异常: ' + ((err && err.message) || err), { duration: 3000 })
+                  delBtn.disabled = false
+                  delBtn.textContent = '🗑️'
+                }
+              },
+            })
           })
           itemWrap.appendChild(delBtn)
         }
