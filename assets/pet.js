@@ -1874,6 +1874,21 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
 .dshp-root.dshp-sizing .dshp-panel{transition:opacity .16s ease}
 .dshp-panel.dshp-on{opacity:1;visibility:visible;
   transform:translateX(calc(-50% + var(--dshp-shift,0px))) translateY(var(--dshp-shift-y,0px))}
+/* 菜单侧边智能停靠：停靠在角色左右两侧，彻底避开上方对话气泡与下方输入框 */
+.dshp-menu{
+  position:absolute!important;bottom:auto!important;top:50%!important;
+  width:360px!important;height:min(320px, calc(100vh - 120px))!important;
+  overflow:hidden!important;box-sizing:border-box!important;
+  z-index:20;
+}
+.dshp-menu.dshp-dock-right{
+  left:calc(100% + 14px * var(--dshp-ps))!important;right:auto!important;
+  transform:translateY(calc(-50% + var(--dshp-shift-y, 0px))) translateX(var(--dshp-shift, 0px))!important;
+}
+.dshp-menu.dshp-dock-left{
+  right:calc(100% + 14px * var(--dshp-ps))!important;left:auto!important;
+  transform:translateY(calc(-50% + var(--dshp-shift-y, 0px))) translateX(var(--dshp-shift, 0px))!important;
+}
 /* 对话输入框：主人要求放置在脚部（避开头部的工作简报与对话气泡） */
 .dshp-composer{position:absolute;top:calc(100% + 44px * var(--dshp-ds))!important;bottom:auto!important;left:50%;
   transform:translateX(calc(-50% + var(--dshp-shift,0px))) translateY(calc(-4px + var(--dshp-shift-y,0px)));z-index:15}
@@ -3044,37 +3059,81 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     const w = rect.width || 0
     if (!w) return
     const r = ui.root.getBoundingClientRect()
+    const isMenu = panel.classList.contains('dshp-menu')
     const isComposer = panel.classList.contains('dshp-composer')
-    const anchor = isComposer ? (r.left + r.width / 2) : headScreenX() // 脚部输入框居中对准脚底，头部面板对准头顶
-    // 面板基准是「以桌宠中心居中」（left:50% + translateX(-50%)），所以位移 = 锚点 - 根节点中心
-    let shift = anchor - (r.left + r.width / 2)
-    // 靠墙时往反方向挪，保证整个面板（含 × ）都在屏幕里
-    const left = anchor + shift - w / 2
-    if (left < pad) shift += pad - left
-    else if (left + w > vw - pad) shift -= left + w - (vw - pad)
-    panel.style.setProperty('--dshp-shift', Math.round(shift) + 'px')
 
-    // 纵向避障与兜底：
-    // 脚部输入框：如果伸出屏幕下边缘，往上平移收缩，保证完全可见且不被任务栏截断
-    // 头部面板：如果伸出屏幕上边缘，往下平移
-    let shiftY = 0
-    if (isComposer) {
-      if (rect.bottom > vh - pad) {
-        shiftY = vh - pad - rect.bottom
+    if (isMenu) {
+      // 菜单侧边智能动态停靠：靠近左边在右边展示，靠近右边在左边展示，绝不遮挡角色头顶气泡与下方输入框
+      const charCenterX = r.left + r.width / 2
+      const menuWidth = rect.width || 360
+      let shiftX = 0
+      let shiftY = 0
+
+      // 水平方向自适应（注意屏幕边角展示方向）：
+      // 角色处于屏幕左半区时，菜单展开在角色右侧 (dshp-dock-right)；
+      // 角色处于屏幕右半区时，菜单展开在角色左侧 (dshp-dock-left)；
+      if (charCenterX < vw / 2) {
+        panel.classList.add('dshp-dock-right')
+        panel.classList.remove('dshp-dock-left')
+        const expectedRight = r.right + 14 + menuWidth
+        if (expectedRight > vw - pad) {
+          shiftX = (vw - pad) - expectedRight
+        }
+      } else {
+        panel.classList.add('dshp-dock-left')
+        panel.classList.remove('dshp-dock-right')
+        const expectedLeft = r.left - 14 - menuWidth
+        if (expectedLeft < pad) {
+          shiftX = pad - expectedLeft
+        }
       }
-      if (rect.top + shiftY < pad) {
-        shiftY = pad - rect.top
+      panel.style.setProperty('--dshp-shift', Math.round(shiftX) + 'px')
+
+      // 纵向避障 (居中腰部对齐微调，边角吸附时不跑出屏幕上下边缘)
+      const curRect = panel.getBoundingClientRect()
+      if (curRect.top < pad) {
+        shiftY = pad - curRect.top
+      } else if (curRect.bottom > vh - pad) {
+        shiftY = (vh - pad) - curRect.bottom
+      }
+      panel.style.setProperty('--dshp-shift-y', Math.round(shiftY) + 'px')
+      // 极端顶边二次检查兜底
+      if (curRect.top + shiftY < pad) {
+        shiftY = pad - curRect.top
+        panel.style.setProperty('--dshp-shift-y', Math.round(shiftY) + 'px')
       }
     } else {
-      const top = rect.top
-      if (top < pad) {
-        shiftY = pad - top
+      const anchor = isComposer ? (r.left + r.width / 2) : headScreenX() // 脚部输入框居中对准脚底，头部面板对准头顶
+      // 面板基准是「以桌宠中心居中」（left:50% + translateX(-50%)），所以位移 = 锚点 - 根节点中心
+      let shift = anchor - (r.left + r.width / 2)
+      // 靠墙时往反方向挪，保证整个面板（含 × ）都在屏幕里
+      const left = anchor + shift - w / 2
+      if (left < pad) shift += pad - left
+      else if (left + w > vw - pad) shift -= left + w - (vw - pad)
+      panel.style.setProperty('--dshp-shift', Math.round(shift) + 'px')
+
+      // 纵向避障与兜底：
+      // 脚部输入框：如果伸出屏幕下边缘，往上平移收缩，保证完全可见且不被任务栏截断
+      // 头部面板：如果伸出屏幕上边缘，往下平移
+      let shiftY = 0
+      if (isComposer) {
+        if (rect.bottom > vh - pad) {
+          shiftY = vh - pad - rect.bottom
+        }
+        if (rect.top + shiftY < pad) {
+          shiftY = pad - rect.top
+        }
+      } else {
+        const top = rect.top
+        if (top < pad) {
+          shiftY = pad - top
+        }
+        if (rect.bottom + shiftY > vh - pad) {
+          shiftY = vh - pad - rect.bottom
+        }
       }
-      if (rect.bottom + shiftY > vh - pad) {
-        shiftY = vh - pad - rect.bottom
-      }
+      panel.style.setProperty('--dshp-shift-y', Math.round(shiftY) + 'px')
     }
-    panel.style.setProperty('--dshp-shift-y', Math.round(shiftY) + 'px')
   }
 
   function clampPanels() {
@@ -3084,6 +3143,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
     placePanel(ui && ui.bubble && ui.bubble.el)
     placePanel(ui && ui.report && ui.report.el)   // 工作简报面板
     placePanel(ui && ui.mail && ui.mail.el)       // 头顶信封
+    reportBoundsToShell()
   }
 
   function fitModel(explicitHeight) {
