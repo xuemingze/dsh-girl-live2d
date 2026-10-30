@@ -23,6 +23,20 @@ export function extractCompanionVoiceText(rawText, characterId = 'whale') {
     .replace(/[#*>\-_~]/g, '')
     .trim()
 
+  // 过滤系统路由元数据、执行耗时及内部调度标签行
+  text = text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => {
+      if (!line) return false
+      if (/^(?:已完成|完成|耗时|用时|执行完毕|运行完毕)/.test(line)) return false
+      if (/^(?:Route|Routing|路由|Intent|意图|Status|状态|Phase|阶段|Step|步骤)\s*[:：]/i.test(line)) return false
+      if (/^\[(?:Route|Status|System|Info|Fast-path)\]/i.test(line)) return false
+      return true
+    })
+    .join('\n')
+    .trim()
+
   if (!text) return ''
 
   // 2. 如果原本就是短句 (<= 45 字)，直接使用原句进行伴侣口播
