@@ -19,6 +19,28 @@ import edge_tts
 
 logger = logging.getLogger("tts_service")
 
+def check_python_dependencies():
+    missing = []
+    for mod, pkg in [
+        ('edge_tts', 'edge-tts>=7.0.0'),
+        ('soundfile', 'soundfile>=0.12.0'),
+        ('psutil', 'psutil>=5.9.0'),
+        ('comtypes', 'comtypes>=1.4.0'),
+        ('pycaw', 'pycaw>=20240210'),
+    ]:
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        logger.warning(
+            f'[Dependency Warning] 检测到缺少关键依赖: {", ".join(missing)}。\n'
+            f'请在桌宠目录下运行: pip install -r requirements.txt 安装完整依赖环境。'
+        )
+    return len(missing) == 0
+
+
+
 # 引入 T0 系统音频感知引擎
 try:
     from voice_engine.audio_perception import AudioPerceptionEngine
@@ -786,7 +808,8 @@ if __name__ == "__main__":
 
     if AudioPerceptionEngine:
         try:
-            PERCEPTION_ENGINE = AudioPerceptionEngine()
+            check_python_dependencies()
+            PERCEPTION_ENGINE = AudioPerceptionEngine(host_pid=args.host_pid)
             PERCEPTION_ENGINE.start()
             logger.info("[Perception Engine] 系统音频感知引擎自动拉起就绪")
         except Exception as e:

@@ -79,8 +79,8 @@
 ### 依赖环境说明
 本项目推荐在 **Windows 10 / 11** 环境下运行，依赖轻量 Python 运行环境：
 ```bash
-# 安装 Python 基础依赖（TTS 语音引擎 + Windows 独立桌面壳 + 系统音频感知探针）
-pip install edge-tts soundfile PySide6 pycaw winsdk psutil
+# 进入插件根目录一键安装所有依赖
+pip install -r requirements.txt
 ```
 
 ### 方式一：在 DeepSeek Harness 中直接安装（推荐）

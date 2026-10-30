@@ -577,6 +577,7 @@
       this.currentIntent = 'idle'
       this.lastPokeSpeechAt = 0
       this.isBusyPreparing = false
+      this._prepareTimer = null
     }
 
     /**
@@ -602,17 +603,26 @@
       }
 
       // 正在发声或网络准备中：按优先级阶梯仲裁
-      // P1 (answer): 拥有抢占权，能打断 P2(点击)、P3(感知)、P4(思考)
+      // 1. 若当前处于最低优先级的思考碎碎念 (P4 thinking)，任何正式回答(P1)、交互触摸(P2)、环境感知(P3)均可立即打断抢占！
+      if (this.currentPriority >= 4 && pri < 4) {
+        return true
+      }
+
+      // 2. P1 (answer): 拥有抢占权，能打断 P2(点击)、P3(感知)、P4(思考)
       if (pri <= 1) {
         return true
       }
 
-      // P2 (poke): 只有在低优 (P3感知 或 P4思考) 时才允许抢占打断；如果在播 P1 正答，忽略点击语音
+      // 3. P2 (poke): 只有在低优 (P3感知 或 P4思考) 时才允许抢占打断；如果在播 P1 正答，忽略点击语音
       if (pri === 2) {
         return this.currentPriority > 2
       }
 
-      // P3 (perception) 与 P4 (thinking): 凡是当前正忙（有声音在播或在准备），一律直接丢弃，绝不插嘴！
+      // 4. P3 (perception): 允许打断 P4(思考)；如果正在播 P1(正答) 或 P2(点击娇嗔)，不插嘴
+      if (pri === 3) {
+        return this.currentPriority > 3
+      }
+
       return false
     }
 
@@ -635,6 +645,19 @@
       if (intent === 'poke') {
         this.lastPokeSpeechAt = performance.now()
       }
+
+      // 健壮性看门狗：防止网络请求超时或丢弃导致 isBusyPreparing 永远卡在 true
+      if (this._prepareTimer) clearTimeout(this._prepareTimer)
+      this._prepareTimer = setTimeout(() => {
+        if (this.activeToken === token && this.isBusyPreparing) {
+          this.isBusyPreparing = false
+          if (!isSpeakingAudio) {
+            this.currentPriority = 999
+            this.currentIntent = 'idle'
+          }
+        }
+      }, 12000)
+
       return token
     }
 
@@ -651,6 +674,10 @@
     onPlayStarted(token) {
       if (token === this.activeToken) {
         this.isBusyPreparing = false
+        if (this._prepareTimer) {
+          clearTimeout(this._prepareTimer)
+          this._prepareTimer = null
+        }
       }
     }
 
@@ -659,6 +686,10 @@
         this.currentPriority = 999
         this.currentIntent = 'idle'
         this.isBusyPreparing = false
+        if (this._prepareTimer) {
+          clearTimeout(this._prepareTimer)
+          this._prepareTimer = null
+        }
         _rawStopCurrentAudio()
       }
     }
@@ -668,6 +699,10 @@
       this.currentPriority = 999
       this.currentIntent = 'idle'
       this.isBusyPreparing = false
+      if (this._prepareTimer) {
+        clearTimeout(this._prepareTimer)
+        this._prepareTimer = null
+      }
       _rawStopCurrentAudio()
     }
   }
@@ -759,6 +794,7 @@
       if (!arrayBuffer || arrayBuffer.byteLength === 0) {
         console.warn('[桌宠语音] 无法从所有候选地址获取音频数据:', candidateUrls)
         if (ui && ui.bubble) ui.bubble.show('示例音频加载失败，请检查音色池文件是否存在~', { duration: 3000 })
+        if (token && speechSequencer) speechSequencer.onPlayEnded(token)
         return
       }
 
@@ -9168,7 +9204,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const parsedStart = ActionCueParser.parse(startLine)
         ui.bubble.show(parsedStart.bubbleText, { name: activeCharInfo().name, busy: true, sticky: true })
         ui.bubble.note('思考中')
-        if (CFG.sound !== false && parsedStart.speechText && !isSpeakingAudio) {
+        if (!m.isPerception && CFG.sound !== false && parsedStart.speechText && !isSpeakingAudio) {
           speakCharacterText(parsedStart.speechText, activeCharacterId)
         }
         break
@@ -9182,7 +9218,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const parsedStep = ActionCueParser.parse(stepThinkLine)
         ui.bubble.show(parsedStep.bubbleText, { name: activeCharInfo().name, busy: true, sticky: true })
         ui.bubble.note('正在思考 · 第 ' + m.step + ' 步')
-        if (CFG.sound !== false && parsedStep.speechText && !isSpeakingAudio) {
+        if (!m.isPerception && CFG.sound !== false && parsedStep.speechText && !isSpeakingAudio) {
           speakCharacterText(parsedStep.speechText, activeCharacterId)
         }
         break
