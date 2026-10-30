@@ -522,6 +522,14 @@
   }
 
   function stopCurrentAudio() {
+    if (speechSequencer) {
+      speechSequencer.abort()
+      return
+    }
+    _rawStopCurrentAudio()
+  }
+
+  function _rawStopCurrentAudio() {
     if (currentAudioSource) {
       try {
         currentAudioSource.onended = null
@@ -545,18 +553,144 @@
     rig.talking = false
     audioCurrentVolume = 0
     audioCurrentForm = 0
+    if (rig && typeof rig.mouthOpen === 'number') {
+      rig.mouthOpen = 0
+    }
   }
 
-  async function playAudioWithLipSync(url, { force = false } = {}) {
+  // ————————————————————————————————————————————————————————————
+  // 统一语音时序调度器 (SpeechSequencer & Arbitrator)
+  // 彻底杜绝：思考语音、感知语音、点击语音与问答正文的多音轨并发、重音及网络竞态切断
+  // ————————————————————————————————————————————————————————————
+  const SPEECH_PRIORITY = {
+    abort: 0,      // P0: 中断/打断指令 (最高)
+    answer: 1,     // P1: DSH 正式回答
+    poke: 2,       // P2: 用户鼠标点击/触摸娇嗔
+    perception: 3, // P3: 系统音频感知环境吐槽 (时效性强，过期即丢弃)
+    thinking: 4,   // P4: 思考/阅读/步骤碎碎念 (最低，单次占位，遇强立退)
+  }
+
+  class SpeechSequencer {
+    constructor() {
+      this.activeToken = 0
+      this.currentPriority = 999
+      this.currentIntent = 'idle'
+      this.lastPokeSpeechAt = 0
+      this.isBusyPreparing = false
+    }
+
+    /**
+     * 判断新到达的意图是否能够获得发声权
+     */
+    canProceed(intent) {
+      const pri = SPEECH_PRIORITY[intent] !== undefined ? SPEECH_PRIORITY[intent] : 5
+      const now = performance.now()
+
+      // P0: 绝对放行
+      if (pri === 0) return true
+
+      // 点击语音防抖 (800ms 内连点抑制重复语音，避免疯狂切音)
+      if (intent === 'poke') {
+        if (now - this.lastPokeSpeechAt < 800) {
+          return false
+        }
+      }
+
+      // 如果当前没有声音在播放也没有正在加载网络，直接放行
+      if (!isSpeakingAudio && !this.isBusyPreparing) {
+        return true
+      }
+
+      // 正在发声或网络准备中：按优先级阶梯仲裁
+      // P1 (answer): 拥有抢占权，能打断 P2(点击)、P3(感知)、P4(思考)
+      if (pri <= 1) {
+        return true
+      }
+
+      // P2 (poke): 只有在低优 (P3感知 或 P4思考) 时才允许抢占打断；如果在播 P1 正答，忽略点击语音
+      if (pri === 2) {
+        return this.currentPriority > 2
+      }
+
+      // P3 (perception) 与 P4 (thinking): 凡是当前正忙（有声音在播或在准备），一律直接丢弃，绝不插嘴！
+      return false
+    }
+
+    /**
+     * 分配全新令牌并使旧令牌立时失效 (原子性解决网络异步竞态)
+     */
+    beginSession(intent) {
+      this.activeToken++
+      const token = this.activeToken
+      const pri = SPEECH_PRIORITY[intent] !== undefined ? SPEECH_PRIORITY[intent] : 5
+
+      // 若为高优抢占，立刻停止现有声门并重置嘴型
+      if (isSpeakingAudio || this.isBusyPreparing) {
+        _rawStopCurrentAudio()
+      }
+
+      this.currentPriority = pri
+      this.currentIntent = intent
+      this.isBusyPreparing = true
+      if (intent === 'poke') {
+        this.lastPokeSpeechAt = performance.now()
+      }
+      return token
+    }
+
+    /**
+     * 校验网络回包是否仍属最新有效令牌
+     */
+    validateToken(token) {
+      if (token !== this.activeToken) {
+        return false
+      }
+      return true
+    }
+
+    onPlayStarted(token) {
+      if (token === this.activeToken) {
+        this.isBusyPreparing = false
+      }
+    }
+
+    onPlayEnded(token) {
+      if (token === this.activeToken) {
+        this.currentPriority = 999
+        this.currentIntent = 'idle'
+        this.isBusyPreparing = false
+        _rawStopCurrentAudio()
+      }
+    }
+
+    abort() {
+      this.activeToken++
+      this.currentPriority = 999
+      this.currentIntent = 'idle'
+      this.isBusyPreparing = false
+      _rawStopCurrentAudio()
+    }
+  }
+
+  const speechSequencer = new SpeechSequencer()
+
+  async function playAudioWithLipSync(url, { force = false, token = null } = {}) {
     if (!CFG.sound) {
       if (force) {
         CFG.sound = true
         persistCfg()
       } else {
+        if (token && speechSequencer) speechSequencer.onPlayEnded(token)
         return
       }
     }
-    stopCurrentAudio()
+
+    // 校验令牌版本：若在排队或下载期间令牌已被新意图废弃，立即静默放弃
+    if (token && speechSequencer && !speechSequencer.validateToken(token)) {
+      return
+    }
+
+    _rawStopCurrentAudio()
     try {
       ensureAudioPipeline()
       if (audioCtx.state === 'suspended') {
@@ -650,6 +784,11 @@
         }
 
         if (audioBuffer) {
+          if (token && speechSequencer && !speechSequencer.validateToken(token)) {
+            try { URL.revokeObjectURL(blobUrl) } catch (e) {}
+            return
+          }
+
           const source = audioCtx.createBufferSource()
           source.buffer = audioBuffer
 
@@ -660,6 +799,7 @@
           rig.talking = true
           if (frameRateGovernor) frameRateGovernor.touch()
           setStatus('speaking')
+          if (token && speechSequencer) speechSequencer.onPlayStarted(token)
 
           source.onended = () => {
             try { URL.revokeObjectURL(blobUrl) } catch (e) {}
@@ -670,6 +810,7 @@
               rig.talking = false
               audioCurrentVolume = 0
               setStatus('idle')
+              if (token && speechSequencer) speechSequencer.onPlayEnded(token)
             }
           }
           source.start(0)
@@ -680,6 +821,11 @@
       }
 
       // 3. 降级使用原生 HTML5 Audio 播放本地 blob URL（绝对无 CORS 和 Header 限制）
+      if (token && speechSequencer && !speechSequencer.validateToken(token)) {
+        try { URL.revokeObjectURL(blobUrl) } catch (e) {}
+        return
+      }
+
       const audio = new Audio(blobUrl)
       audio.volume = vol
       currentAudioElement = audio
@@ -687,6 +833,8 @@
       rig.talking = true
       if (frameRateGovernor) frameRateGovernor.touch()
       setStatus('speaking')
+      if (token && speechSequencer) speechSequencer.onPlayStarted(token)
+
       audio.onended = () => {
         try { URL.revokeObjectURL(blobUrl) } catch (e) {}
         if (currentAudioElement === audio) {
@@ -695,6 +843,7 @@
           rig.talking = false
           audioCurrentVolume = 0
           setStatus('idle')
+          if (token && speechSequencer) speechSequencer.onPlayEnded(token)
         }
       }
       audio.onerror = (e) => {
@@ -705,6 +854,7 @@
           rig.talking = false
           audioCurrentVolume = 0
           setStatus('idle')
+          if (token && speechSequencer) speechSequencer.onPlayEnded(token)
         }
         console.warn('[桌宠语音] HTML5 Audio 播放失败:', e)
       }
@@ -716,22 +866,35 @@
           rig.talking = false
           audioCurrentVolume = 0
           setStatus('idle')
+          if (token && speechSequencer) speechSequencer.onPlayEnded(token)
         }
       })
     } catch (e) {
       isSpeakingAudio = false
       rig.talking = false
+      if (token && speechSequencer) speechSequencer.onPlayEnded(token)
       console.warn('[桌宠语音] playAudioWithLipSync 异常:', e)
     }
   }
 
   /**
-   * 伴随动作点击的专属角色 TTS 实时合成与播报（自动携带当前角色专属声线）
+   * 伴随动作点击的专属角色 TTS 实时合成与播报（自动携带当前角色专属声线，受时序调度器仲裁管辖）
    */
-  async function speakCharacterText(text, charId = activeCharacterId, { isTap = false } = {}) {
+  async function speakCharacterText(text, charId = activeCharacterId, { isTap = false, intent = null } = {}) {
     if (!text || CFG.sound === false) return
     if (isTap && CFG.tapVoice === false) return
     if (isClientDetached && !isStandalone) return
+
+    const actualIntent = intent || (isTap ? 'poke' : 'thinking')
+
+    // 1. 时序器门禁与优先级仲裁
+    if (speechSequencer && !speechSequencer.canProceed(actualIntent)) {
+      return
+    }
+
+    // 2. 申领全新会话 Token 并立时抢占
+    const token = speechSequencer ? speechSequencer.beginSession(actualIntent) : null
+
     const char = CHARACTERS[charId] || {}
     const charVoice = char.voice || {}
     const payload = JSON.stringify({
@@ -759,13 +922,27 @@
           body: payload,
         })
       }
+
+      // 3. 异步网络返回后二次校验 Token：若在等待期间已被废弃，直接丢弃
+      if (token && speechSequencer && !speechSequencer.validateToken(token)) {
+        return
+      }
+
       if (resp && resp.ok) {
         const ab = await resp.arrayBuffer()
-        if (ab && ab.byteLength > 200) {
-          await playAudioWithLipSync(ab, { force: true })
+        if (token && speechSequencer && !speechSequencer.validateToken(token)) {
+          return
         }
+        if (ab && ab.byteLength > 200) {
+          await playAudioWithLipSync(ab, { force: true, token })
+        } else if (token && speechSequencer) {
+          speechSequencer.onPlayEnded(token)
+        }
+      } else if (token && speechSequencer) {
+        speechSequencer.onPlayEnded(token)
       }
     } catch (e) {
+      if (token && speechSequencer) speechSequencer.onPlayEnded(token)
       console.warn('[桌宠语音] speakCharacterText 异常:', e)
     }
   }
@@ -9039,10 +9216,20 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       case 'voice-speech':
         if (CFG.sound !== false && (m.url || m.audioUrl)) {
           const audioUrl = m.audioUrl || m.url
+          const intent = m.intent || 'answer'
+
+          // 1. 时序器门禁与优先级仲裁
+          if (speechSequencer && !speechSequencer.canProceed(intent)) {
+            break
+          }
+
+          // 2. 申领全新会话 Token 并抢占
+          const token = speechSequencer ? speechSequencer.beginSession(intent) : null
+
           if (m.text) {
             ui.bubble.show(m.text, { name: activeCharInfo().name, sticky: false, duration: 4500 })
           }
-          playAudioWithLipSync(audioUrl)
+          playAudioWithLipSync(audioUrl, { token })
         }
         break
 
