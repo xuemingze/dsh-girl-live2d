@@ -12,12 +12,23 @@ import sys
 import subprocess
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from typing import Optional
+from typing import Optional, Any
 
 import soundfile as sf
 import edge_tts
 
 logger = logging.getLogger("tts_service")
+
+# 引入 T0 系统音频感知引擎
+try:
+    from voice_engine.audio_perception import AudioPerceptionEngine
+except ImportError:
+    try:
+        from audio_perception import AudioPerceptionEngine
+    except ImportError:
+        AudioPerceptionEngine = None
+
+PERCEPTION_ENGINE: Optional[Any] = None
 
 # 5 大角色对应的高品质默认基座音色字典
 CHARACTER_VOICES = {
@@ -367,6 +378,11 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"status": "ok", "service": "dsh-girl-live2d TTS Service"}')
         elif clean_path in ("/desktop/status", "/dsh-pet/desktop/status"):
             self._send_json(200, get_desktop_status())
+        elif clean_path in ("/perception/status", "/dsh-pet/perception/status"):
+            if PERCEPTION_ENGINE:
+                self._send_json(200, PERCEPTION_ENGINE.get_status())
+            else:
+                self._send_json(200, {"enabled": False, "running": False, "error": "Not initialized"})
         elif clean_path in ("/shutdown", "/tts/stop", "/dsh-pet/tts/stop"):
             self._handle_shutdown()
         elif self.path.startswith(("/voices_pool/", "/dsh-pet/voices_pool/")):
@@ -447,6 +463,12 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
         elif clean_path in ("/desktop/close", "/dsh-pet/desktop/close"):
             res = close_desktop()
             self._send_json(200, res)
+        elif clean_path in ("/perception/toggle", "/dsh-pet/perception/toggle"):
+            if PERCEPTION_ENGINE:
+                PERCEPTION_ENGINE.enabled = not PERCEPTION_ENGINE.enabled
+                self._send_json(200, {"ok": True, "enabled": PERCEPTION_ENGINE.enabled})
+            else:
+                self._send_error_json(500, "Perception engine not available")
         elif clean_path in ("/shutdown", "/tts/stop", "/dsh-pet/tts/stop"):
             self._handle_shutdown()
         elif self.path.startswith("/tts"):
@@ -622,6 +644,9 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
 
         logger.info(f"[TTS Service] [{char_id}] 正在合成: '{clean_text[:35]}...' (音色: {voice}, 语速: {rate}, 音调: {pitch})")
 
+        if PERCEPTION_ENGINE:
+            PERCEPTION_ENGINE.set_tts_playing(True)
+
         try:
             wav_bytes = asyncio.run(_synthesize_edge_tts_to_wav(clean_text, voice, rate=rate, pitch=pitch))
             self.send_response(200)
@@ -631,7 +656,12 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(wav_bytes)
             logger.info(f"[TTS Service] 合成完毕，返回音频流 ({len(wav_bytes)} 字节)")
+            if PERCEPTION_ENGINE:
+                duration_sec = max(2.0, len(wav_bytes) / 48000.0)
+                threading.Timer(duration_sec + 0.5, lambda: PERCEPTION_ENGINE.set_tts_playing(False)).start()
         except Exception as e:
+            if PERCEPTION_ENGINE:
+                PERCEPTION_ENGINE.set_tts_playing(False)
             logger.exception(f"[TTS Service] 合成异常: {e}")
             self._send_error_json(500, f"Synthesis Error: {e}")
 
@@ -693,6 +723,12 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
 
     def _handle_shutdown(self):
         """优雅关闭 TTS 后端服务"""
+        global PERCEPTION_ENGINE
+        if PERCEPTION_ENGINE:
+            try:
+                PERCEPTION_ENGINE.stop()
+            except Exception:
+                pass
         try:
             close_desktop()
         except Exception:
@@ -747,7 +783,18 @@ if __name__ == "__main__":
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("127.0.0.1", args.port), TTSServiceHandler)
     logger.info("[TTS Service] 9880 声带服务已就绪: http://127.0.0.1:9880/tts")
+
+    if AudioPerceptionEngine:
+        try:
+            PERCEPTION_ENGINE = AudioPerceptionEngine()
+            PERCEPTION_ENGINE.start()
+            logger.info("[Perception Engine] 系统音频感知引擎自动拉起就绪")
+        except Exception as e:
+            logger.warning(f"[Perception Engine] 启动音频感知引擎异常: {e}")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        if PERCEPTION_ENGINE:
+            PERCEPTION_ENGINE.stop()
         server.server_close()
