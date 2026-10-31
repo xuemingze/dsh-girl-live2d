@@ -6,8 +6,36 @@ import logging
 import threading
 from typing import Optional, Dict, Any
 
-from core.interfaces import ICompanionSubsystem, SubsystemStatus, SubsystemState
-from core.config_manager import ConfigManager
+try:
+    from core.interfaces import ICompanionSubsystem, SubsystemStatus, SubsystemState
+    from core.config_manager import ConfigManager
+except ImportError:
+    from enum import Enum
+    from dataclasses import dataclass, field
+
+    class SubsystemState(str, Enum):
+        STOPPED = "stopped"
+        STARTING = "starting"
+        RUNNING = "running"
+        ERROR = "error"
+
+    @dataclass
+    class SubsystemStatus:
+        name: str
+        state: SubsystemState
+        message: str = ""
+        details: Dict[str, Any] = field(default_factory=dict)
+
+    class ICompanionSubsystem:
+        pass
+
+    class ConfigManager:
+        def __init__(self):
+            self._store: Dict[str, Dict[str, Any]] = {}
+        def get(self, section: str, key: str, default: Any = None) -> Any:
+            return self._store.get(section, {}).get(key, default)
+        def set(self, section: str, key: str, value: Any) -> None:
+            self._store.setdefault(section, {})[key] = value
 
 logger = logging.getLogger("visual_subsystem")
 

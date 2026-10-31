@@ -578,7 +578,7 @@ class AudioPerceptionEngine:
 
             loop = asyncio.new_event_loop()
             try:
-                return loop.run_until_complete(_fetch())
+                return loop.run_until_complete(asyncio.wait_for(_fetch(), timeout=1.5))
             finally:
                 loop.close()
         except Exception:

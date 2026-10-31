@@ -91,7 +91,10 @@ class VisualExecutor:
         """启动快捷方式或可执行文件"""
         p = Path(name_or_path)
         if p.exists():
-            subprocess.Popen([str(p)], shell=True)
+            if hasattr(os, "startfile"):
+                os.startfile(str(p))
+            else:
+                subprocess.Popen([str(p)], shell=False)
             return {"success": True, "message": f"已启动文件: {p}"}
 
         # 检查常见桌面或快捷方式
@@ -151,7 +154,10 @@ class VisualExecutor:
                 if stype == "launch_app":
                     app_path = params.get("path", "")
                     if app_path and Path(app_path).exists():
-                        subprocess.Popen([app_path], shell=True)
+                        if hasattr(os, "startfile"):
+                            os.startfile(str(app_path))
+                        else:
+                            subprocess.Popen([str(app_path)], shell=False)
                         logs.append(f"  -> 已拉起程序: {app_path}")
                     else:
                         logs.append(f"  -> 程序路径不存在: {app_path}")

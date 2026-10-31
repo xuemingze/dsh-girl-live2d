@@ -5,36 +5,43 @@
  * 严格控制在 2 句话、80 字以内，让 TTS 朗读清爽自然，拒绝长篇大论背诵代码。
  */
 
-export function extractCompanionVoiceText(rawText, characterId = 'whale') {
-  if (!rawText || typeof rawText !== 'string') return ''
-
-  // 1. 彻底剔除思考链和不可读语法块（支持未闭合流式思考）
-  let text = rawText
+/** 彻底剔除思考内容（<think>、<thought>、<reasoning> 标签及未闭合的前置思考链）与系统路由状态行 */
+export function stripThinking(text) {
+  if (!text || typeof text !== 'string') return ''
+  let s = text
     .replace(/<\s*(?:think|thought|reasoning|analysis|reflection)(?:\s[^>]*)?>[\s\S]*?(?:<\/\s*(?:think|thought|reasoning|analysis|reflection)\s*>|$)/gi, '')
     .replace(/<\|(?:thought|think|reasoning|analysis)\|>[\s\S]*?(?:<\|\/(?:thought|think|reasoning|analysis)\|>|$)/gi, '')
     .replace(/:::thinking[\s\S]*?(?::::|$)/gi, '')
     .replace(/```(?:thought|thinking)[\s\S]*?(?:```|$)/gi, '')
     .replace(/\[\/?(?:THINK|THOUGHT|REASONING)\][\s\S]*?(?:\[\/(?:THINK|THOUGHT|REASONING)\]|$)/gi, '')
     .replace(/^(?:thought process|thinking process|思考过程|思考路径)\s*[:：][\s\S]*?(?:\n\n|$)/gi, '')
+
+  // 剔除 DSH 系统路由/完成状态行（如 "Route: fast-path —— ...", "已完成，用时 3秒"）
+  s = s
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim()
+      if (!t) return false
+      if (/^(?:已完成|完成|耗时|用时|执行完毕|运行完毕)/.test(t)) return false
+      if (/^(?:Route|Routing|路由|Intent|意图|Status|状态|Phase|阶段|Step|步骤)\s*[:：]/i.test(t)) return false
+      if (/^\[(?:Route|Status|System|Info|Fast-path)\]/i.test(t)) return false
+      return true
+    })
+    .join('\n')
+  if (/^<[a-zA-Z|]{1,12}>?$/i.test(s.trim())) return ''
+  return s.trim()
+}
+
+export function extractCompanionVoiceText(rawText, characterId = 'whale') {
+  if (!rawText || typeof rawText !== 'string') return ''
+
+  // 1. 彻底剔除思考链和不可读语法块（支持未闭合流式思考）
+  let text = stripThinking(rawText)
     .replace(/```[\s\S]*?```/gi, '代码块')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[.*?\]\(.*?\)/g, '')
     .replace(/\[(.*?)\]\(.*?\)/g, '$1')
     .replace(/[#*>\-_~]/g, '')
-    .trim()
-
-  // 过滤系统路由元数据、执行耗时及内部调度标签行
-  text = text
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => {
-      if (!line) return false
-      if (/^(?:已完成|完成|耗时|用时|执行完毕|运行完毕)/.test(line)) return false
-      if (/^(?:Route|Routing|路由|Intent|意图|Status|状态|Phase|阶段|Step|步骤)\s*[:：]/i.test(line)) return false
-      if (/^\[(?:Route|Status|System|Info|Fast-path)\]/i.test(line)) return false
-      return true
-    })
-    .join('\n')
     .trim()
 
   if (!text) return ''

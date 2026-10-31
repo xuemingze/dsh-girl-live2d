@@ -25,7 +25,10 @@ PROJECT_DIR = WORKBENCH_DIR.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from visual_mcp.executor import VisualExecutor
+try:
+    from visual_hands.executor import VisualExecutor
+except ImportError:
+    from executor import VisualExecutor
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("visual_workbench")

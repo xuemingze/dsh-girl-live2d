@@ -4,7 +4,7 @@
 
 **A Multi-Companion Live2D Desktop Pet & Voice-Interactive AI Plugin for DeepSeek Harness (DSH)**
 
-[![Version](https://img.shields.io/badge/version-1.1.07-7c5cff.svg)](https://github.com/xuemingze/dsh-girl-live2d/releases)
+[![Version](https://img.shields.io/badge/version-1.1.08-7c5cff.svg)](https://github.com/xuemingze/dsh-girl-live2d/releases)
 [![License: MIT](https://img.shields.io/badge/Code_License-MIT-green.svg)](./LICENSE)
 [![Live2D Cubism](https://img.shields.io/badge/Live2D-Cubism_4%2F5-ff66a5.svg)](https://www.live2d.com/)
 

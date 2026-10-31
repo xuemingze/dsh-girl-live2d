@@ -29,9 +29,9 @@ import { fileURLToPath } from 'node:url'
 const OWNER = (() => {
   const a = process.argv.find((x) => x.startsWith('--owner='))
   if (a) return a.slice('--owner='.length)
-  return process.env.GH_OWNER || 'Andersen216'
+  return process.env.GH_OWNER || 'xuemingze'
 })()
-const REPO = 'dsh-whale-girl-live2d'         // 插件名（短、且与 npm 上三家同名鲸鱼娘桌宠区分开）
+const REPO = 'dsh-girl-live2d'         // 插件名（短、且与 npm 上三家同名鲸鱼娘桌宠区分开）
 const LIST_OWNER = 'awesome-dsh-plugin'
 const LIST_REPO = 'awesome-dsh-plugin'
 const CATEGORY = 'fun'

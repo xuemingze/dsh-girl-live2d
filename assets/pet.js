@@ -6465,7 +6465,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
         const p = pathInput.value.trim()
         const n = nameInput.value.trim()
         if (!p) {
-          alert('请先输入模型文件夹的绝对路径！')
+          ui.bubble.show('请先输入模型文件夹的绝对路径！', { duration: 2500 })
           return
         }
         importBtn.textContent = '正在扫描并导入模型...'
@@ -6476,7 +6476,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             body: JSON.stringify({ sourcePath: p, name: n }),
           })
           if (!data.ok) {
-            alert('导入失败: ' + (data.error || '未知错误'))
+            ui.bubble.show('导入失败: ' + (data.error || '未知错误'), { duration: 3000 })
             importBtn.textContent = '一键导入并切换'
             importBtn.disabled = false
             return
@@ -6496,7 +6496,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           await switchCharacter(c.id)
           renderPane('character')
         } catch (err) {
-          alert('导入异常: ' + ((err && err.message) || err))
+          ui.bubble.show('导入异常: ' + ((err && err.message) || err), { duration: 3000 })
           importBtn.textContent = '一键导入并切换'
           importBtn.disabled = false
         }
@@ -6729,7 +6729,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             throw new Error('TTS 9880 服务或主服务未响应')
           }
         } catch (e) {
-          alert('恢复失败: ' + e.message)
+          ui.bubble.show('恢复失败: ' + e.message, { duration: 3000 })
         } finally {
           restoreDefaultsBtn.disabled = false
           restoreDefaultsBtn.textContent = '⚡ 恢复官方全套'
@@ -7007,7 +7007,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
                 await playAudioWithLipSync(item.file || item.path, { force: true })
                 loadVoicePool()
               } catch (e) {
-                alert('设置角色音失败: ' + (e.message || e))
+                ui.bubble.show('设置角色音失败: ' + (e.message || e), { duration: 3000 })
               } finally {
                 setCharVoiceBtn.disabled = false
               }
@@ -7069,10 +7069,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
                   ui.bubble.show(`已删除示例音色「${item.name || item.file}」`, { duration: 2500 })
                   loadVoicePool()
                 } else {
-                  alert('删除失败: ' + (errMsg || '未知错误'))
+                  ui.bubble.show('删除失败: ' + (errMsg || '未知错误'), { duration: 3000 })
                 }
               } catch (e) {
-                alert('删除异常: ' + e.message)
+                ui.bubble.show('删除异常: ' + e.message, { duration: 3000 })
               }
             })
 
@@ -7231,10 +7231,10 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
             ui.bubble.show(`声音生成成功！匹配音色：${resData.voice} (${resData.rate || '+0%'}, ${resData.pitch || '+0Hz'})`, { duration: 3500 })
             await playAudioWithLipSync(resData.audioUrl, { force: true })
           } else {
-            alert('生成失败: ' + ((resData && resData.error) || '未知错误'))
+            ui.bubble.show('生成失败: ' + ((resData && resData.error) || '未知错误'), { duration: 3000 })
           }
         } catch (err) {
-          alert('生成异常: ' + ((err && err.message) || err))
+          ui.bubble.show('生成异常: ' + ((err && err.message) || err), { duration: 3000 })
         } finally {
           genPlayBtn.textContent = '▶ 生成并试听声音'
           genPlayBtn.disabled = false
@@ -7271,7 +7271,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           }
           ui.bubble.show(`已将新音色设为「${activeCharInfo().name}」默认声音！`, { duration: 3000 })
         } catch (e) {
-          alert('保存失败: ' + ((e && e.message) || e))
+          ui.bubble.show('保存失败: ' + ((e && e.message) || e), { duration: 3000 })
         } finally {
           saveVoiceBtn.textContent = '💾 设为当前伴侣声音'
           saveVoiceBtn.disabled = false
@@ -7528,7 +7528,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           })
           ui.bubble.show(`「${activeCharInfo().name}」本地 TTS 配置已保存！`, { duration: 3000 })
         } catch (e) {
-          alert('保存失败: ' + ((e && e.message) || e))
+          ui.bubble.show('保存失败: ' + ((e && e.message) || e), { duration: 3000 })
         } finally {
           saveLocalBtn.textContent = '💾 保存本地 TTS 模型配置'
           saveLocalBtn.disabled = false
@@ -7734,7 +7734,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
       addBtn.addEventListener('click', () => {
         const val = textInput.value.trim()
         if (!val) {
-          alert('请先输入台词内容哦~')
+          ui.bubble.show('请先输入台词内容哦~', { duration: 2200 })
           return
         }
         if (isWhale) {
@@ -7842,7 +7842,7 @@ body.dshp-pet-hidden .dshp-tab{display:flex}
           delBtn.style.color = '#ff6b6b'
           delBtn.title = '删除此条自定义台词'
           delBtn.addEventListener('click', () => {
-            if (!confirm(`确认删除此台词「${item.text}」吗？`)) return
+            showInPageConfirm({ title: '删除台词', content: `确认删除此台词「${item.text}」吗？`, confirmText: '删除', cancelText: '取消', onConfirm: () => { profile.deleteCustomLine(item.id); renderPane('click'); } }); return;
             profile.deleteCustomLine(item.id)
             renderPane('click')
           })

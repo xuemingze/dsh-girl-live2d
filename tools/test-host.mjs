@@ -161,7 +161,7 @@ check('注册了 control', exact.has('/dsh-pet/control'))
 check('注册了 state', exact.has('/dsh-pet/state'))
 check('注册了 diag', exact.has('/dsh-pet/diag'))
 check('注册了 standalone', exact.has('/dsh-pet/standalone'))
-check('注册了 model/vendor 前缀路由', prefixes.length === 2, prefixes.map((p) => p.path).join(', '))
+check('注册了 model/vendor/characters/modules/voices_pool 前缀路由', prefixes.length === 5, prefixes.map((p) => p.path).join(', '))
 check('挂了 index 注入', indexTaps.length === 1)
 
 const get = async (p) => {
@@ -581,7 +581,7 @@ check(
   '炸毛后有冷静期，不会一直凶主人',
   /angerCool:\s*\d+/.test(petCode) && /sinceAnger > T\.angerCool/.test(petCode) && /pokeState\.angerAt/.test(petCode),
 )
-check('平常戳身子池里没有生气的脸（生气只留给手速党）', /const POKE_BODY = \[[\s\S]*?\n  \]/.test(petCode) && !/const POKE_BODY = \[[\s\S]*?mood: 'grumpy'[\s\S]*?\n  \]/.test(petCode))
+check('平常戳身子池里没有生气的脸（生气只留给手速党）', /const POKE_BODY = \[[\s\S]*?\n  \]/.test(petCode) && !/const POKE_BODY = \[(?:(?!\n  \])[\s\S])*?mood: 'grumpy'/.test(petCode))
 check('摸头池里「被叫胖」那条权重被压低（生气是彩蛋不是常态）', /mood: 'grumpy',\s*\n\s*w: 0\.4/.test(petCode))
 check('反应池支持权重（pickFresh 会读 w）', petCode.includes('weightOf') && /weightOf[\s\S]{0,400}r -= weightOf\(x\)/.test(petCode))
 check(
@@ -605,6 +605,58 @@ check(
 )
 check('竖直位置只做「别被屏幕切掉」的软夹，不做吸附', /function clampY\(/.test(petCode) && petCode.includes('maxTop'))
 check('没注册 Expressions（避免和 rig 抢参数）', !JSON.parse(fs.readFileSync(path.join(ROOT, 'assets/model/c_0120.model3.json'), 'utf8')).FileReferences.Expressions)
+
+// ————————————————————————————————————————————————————————————
+// 多角色管理安全边界 & T0 音频感知中枢防误触测试
+// ————————————————————————————————————————————————————————————
+const charsRes = await get('/dsh-pet/characters')
+const charsData = JSON.parse(charsRes.buf.toString('utf8'))
+check('多角色清单接口 /dsh-pet/characters 可用且包含 5 款内置角色', charsRes.status === 200 && charsData.ok === true && Array.isArray(charsData.characters) && charsData.characters.length >= 5)
+
+const delBuiltin = await fetch(BASE + '/dsh-pet/delete-character', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ characterId: 'tutu' }),
+})
+check('内置黄金伴侣禁止删除（返回 403）', delBuiltin.status === 403)
+
+const delTraversal = await fetch(BASE + '/dsh-pet/delete-character', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ characterId: '../../outside_dir' }),
+})
+check('删除角色接口阻断路径穿越攻击（返回 400）', delTraversal.status === 400)
+
+const setTraversal = await fetch(BASE + '/dsh-pet/set-character', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ characterId: '../hack' }),
+})
+check('切换角色接口阻断非法角色 ID（返回 400）', setTraversal.status === 400)
+
+const percSelf = await fetch(BASE + '/dsh-pet/perception', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ action: 'ENTER', category: 'video', app: 'deepseek harness.exe', title: 'deepseek harness.exe' }),
+})
+const percSelfJson = await percSelf.json()
+check('感知中枢自动拦截宿主自身音频（防自激回声）', percSelf.status === 200 && percSelfJson.ignored === 'self_or_system_app')
+
+const percGame = await fetch(BASE + '/dsh-pet/perception', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ action: 'ENTER', category: 'game', app: 'eldenring.exe', title: 'ELDEN RING' }),
+})
+const percGameJson = await percGame.json()
+check('感知中枢正常注入外部游戏场景提示词', percGame.status === 200 && percGameJson.injected === true)
+
+const percCool = await fetch(BASE + '/dsh-pet/perception', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ action: 'ENTER', category: 'game', app: 'eldenring.exe', title: 'ELDEN RING' }),
+})
+const percCoolJson = await percCool.json()
+check('感知中枢同场景自适应冷却拦截生效', percCool.status === 200 && percCoolJson.ignored === 'cooldown')
 
 server.close()
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败\n`)

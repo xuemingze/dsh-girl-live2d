@@ -63,7 +63,7 @@ function deskPort() {
   }
 }
 const petURL = () => petBase + '/dsh-pet/standalone'
-const PLUGIN = 'github:Andersen216/dsh-whale-girl-live2d'
+const PLUGIN = 'github:xuemingze/dsh-girl-live2d'
 // 同 macOS：窗口要装得下她 + 四周的面板（透明区域点击穿透，不挡别的窗口）
 const WIN_W = 560
 const WIN_H = 900   // 只加高：给她头顶留出聊天框的位置

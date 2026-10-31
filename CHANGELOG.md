@@ -1,5 +1,34 @@
 # 更新日志 / Changelog
 
+## 1.1.08 — 2026-10-31
+
+> **English Summary**
+>
+> **Code Review, Structural Optimizations & Critical Security Hardenings**:
+> 1. **Security & Trust Fence Fix**: Fixed loopback address (`127.0.0.1`) check in `isDesktopReq` to enforce token authentication alongside loopback matching, preventing browser-side CSRF bypass of `connection.requestRejection`.
+> 2. **Path Traversal Protection**: Added `safeCharDir` with `/^[a-zA-Z0-9_-]+$/` validation across character asset and deletion APIs to block directory traversal attacks.
+> 3. **Native Dialog Replacement**: Migrated all remaining native `alert()` and `confirm()` calls to in-page dark confirmation modals (`showInPageConfirm`) and speech bubble notifications, eliminating transparent window rendering anomalies.
+> 4. **TTS Concurrency & SMTC Timeout**: Fixed overlapping TTS timer race condition with active timer cancellation, and added a 1.5s timeout for Windows SMTC queries.
+> 5. **Subsystem & Workbench Imports**: Resolved missing imports in `visual_hands` and standardized cross-platform process launching.
+> 6. **Full Test Suite Verification**: All 166 host integration tests and security boundary assertions passed.
+
+### 🛡️ 全局代码评审、架构结构优化与安全加固
+
+1. **信任栅栏与回环地址安全修复**：
+   - 修复 `isDesktopReq` 逻辑，要求**回环地址必须搭配合法通行证令牌**（Cookie / Header / Query），彻底阻断外部网页跨域绕过 `connection.requestRejection` 信任栅栏的潜在安全风险。
+2. **多角色管理路径穿越（Path Traversal）安全拦截**：
+   - 新增 `safeCharDir` 守卫，对 `/dsh-pet/set-character`、`/dsh-pet/character-assets`、`/dsh-pet/save-character-*` 与 `/dsh-pet/delete-character` 路由实施严格的角色 ID 格式校验与安全路径解析，杜绝越界访问与任意目录删除。
+3. **原生弹窗彻底清零与页内沉浸体验统一**：
+   - 将角色导入、音色池管理与自定义台词删除中残留的原生 `alert()` / `confirm()` 全面替换为暗色页内确认模态框（`showInPageConfirm`）与桌宠语音气泡提示，彻底根除透明无边框窗口下的异常黑色弹窗。
+4. **TTS 声带并发防自激与 SMTC 异步超时保护**：
+   - 解决 TTS 连续合成时定时器竞态问题，每次新合成前主动重置上一轮未到期的计时器句柄；
+   - 为系统媒体控件（SMTC）查询增加 1.5 秒硬超时保护，规避系统服务偶发无响应导致的感知线程挂起。
+5. **视觉自动化模块导入与跨平台拉起修复**：
+   - 修复 `visual_hands/workbench.py` 与 `visual_hands/subsystem.py` 中的模块路径与独立状态兜底；
+   - 规范 `executor.py` 启动程序逻辑，Windows 下采用原生 `os.startfile`，避免 `shell=True` 参数安全隐患。
+6. **166 项集成测试全量验证通过**：
+   - 修复原有测试断言偏差，补充角色防删、路径穿越拦截、自身音频过滤与同场景冷却等专项自动化测试，测试通过率 100%（166/166）。
+
 ## 1.0.16 — 2026-10-28
 
 > **English Summary**

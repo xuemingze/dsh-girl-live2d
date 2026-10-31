@@ -9,7 +9,7 @@ import logging
 import asyncio
 import re
 import sys
-import subprocess
+import subprocess, threading, time
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Any
@@ -585,7 +585,7 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": False, "error": "没有可供保存的音频数据，请先生成声音"}).encode("utf-8"))
             return
 
-        raw_name = (name or f"sample_{int(asyncio.get_event_loop_policy().get_event_loop().time())}").strip()
+        raw_name = (name or f"sample_{int(time.time())}").strip()
         safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fa5-]', '_', raw_name)
         if not safe_name.lower().endswith(".wav"):
             safe_name += ".wav"
@@ -680,7 +680,10 @@ class TTSServiceHandler(BaseHTTPRequestHandler):
             logger.info(f"[TTS Service] 合成完毕，返回音频流 ({len(wav_bytes)} 字节)")
             if PERCEPTION_ENGINE:
                 duration_sec = max(2.0, len(wav_bytes) / 48000.0)
-                threading.Timer(duration_sec + 0.5, lambda: PERCEPTION_ENGINE.set_tts_playing(False)).start()
+                if getattr(TTSServiceHandler, "_tts_playing_timer", None) is not None: TTSServiceHandler._tts_playing_timer.cancel()
+                TTSServiceHandler._tts_playing_timer = threading.Timer(duration_sec + 0.5, lambda: PERCEPTION_ENGINE.set_tts_playing(False))
+                TTSServiceHandler._tts_playing_timer.daemon = True
+                TTSServiceHandler._tts_playing_timer.start()
         except Exception as e:
             if PERCEPTION_ENGINE:
                 PERCEPTION_ENGINE.set_tts_playing(False)
